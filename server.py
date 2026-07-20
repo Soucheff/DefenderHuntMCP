@@ -6,22 +6,34 @@ Provides KQL query execution, alert management, threat hunting, and
 Microsoft Entra ID identity investigation via Microsoft Graph API.
 """
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from azure.identity import ClientSecretCredential
 from dotenv import load_dotenv
 from kiota_abstractions.api_error import APIError
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from msgraph.generated.security.microsoft_graph_security_run_hunting_query.run_hunting_query_post_request_body import (
     RunHuntingQueryPostRequestBody,
 )
 from msgraph.graph_service_client import GraphServiceClient
 from pydantic import Field
 
-from config import CLIENT_ID, CLIENT_SECRET, SCOPES, TENANT_ID, Config
+from agent_governance import (
+    AgentGovernanceClient,
+    AgentGovernanceUnavailable,
+    analyze_permission_assignments,
+)
+from auth_context import get_request_identity
+from auth_policy import authorize_current_identity
+from cache_runtime import cached_operation
+from config import Config
+from graph_clients import GraphClientFactory
+from query_safety import quote_kql_string, quote_odata_string
+from workflow_engine import run_workflow
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -34,13 +46,46 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Shared MCP input contracts
+# ---------------------------------------------------------------------------
+DaysBack30 = Annotated[int, Field(ge=1, le=30, description="Days back (1-30)")]
+DaysBack90 = Annotated[int, Field(ge=1, le=90, description="Days back (1-90)")]
+ResultLimit100 = Annotated[int, Field(ge=1, le=100, description="Maximum results (1-100)")]
+ResultLimit200 = Annotated[int, Field(ge=1, le=200, description="Maximum results (1-200)")]
+ResultLimit500 = Annotated[int, Field(ge=1, le=500, description="Maximum results (1-500)")]
+
+AlertSeverity = Literal["informational", "low", "medium", "high", "unknown"]
+AlertStatus = Literal["new", "inProgress", "resolved", "unknown"]
+SignInStatus = Literal["success", "failure", "all"]
+RiskLevel = Literal["none", "low", "medium", "high", "all"]
+RiskState = Literal["atRisk", "confirmedCompromised", "remediated", "dismissed", "all"]
+DetailLevel = Literal["summary", "standard", "evidence"]
+MaxEvidence = Annotated[int, Field(ge=1, le=50, description="Maximum evidence items (1-50)")]
+WorkflowConcurrency = Annotated[int, Field(ge=1, le=8, description="Concurrent steps (1-8)")]
+BatchIoCs = Annotated[list[str], Field(min_length=1, max_length=20)]
+ThreatModule = Literal[
+    "ransomware",
+    "powershell",
+    "lolbins",
+    "lateral_movement",
+    "credential_access",
+    "persistence",
+    "child_processes",
+    "remote_access",
+    "defense_evasion",
+    "threat_intel",
+    "data_exfiltration",
+    "asr",
+]
+
+# ---------------------------------------------------------------------------
 # FastMCP server
 # ---------------------------------------------------------------------------
 mcp = FastMCP(
     "defender_hunt_mcp",
     instructions=(
         "MCP server for Microsoft Defender and Entra ID security operations. "
-        "Provides 31 tools for KQL Advanced Hunting, alert management, threat intelligence "
+        "Provides atomic and workflow tools for KQL Advanced Hunting, alert management, threat intelligence "
         "enrichment, IoC hunting, identity investigation (sign-in/audit logs, risky users, "
         "Conditional Access), security posture dashboards, and advanced threat detection "
         "modules covering ransomware, LOLBIN abuse, lateral movement, credential dumping, "
@@ -51,37 +96,43 @@ mcp = FastMCP(
     stateless_http=True,
 )
 
+READ_ONLY_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+)
+
+
+def read_only_tool():
+    """Register a read-only tool with consistent MCP behavioral hints."""
+    return mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+
+
 # ---------------------------------------------------------------------------
-# Microsoft Graph client (lazy singleton)
+# Microsoft Graph client factory (lazy singleton)
 # ---------------------------------------------------------------------------
-_graph_client: GraphServiceClient | None = None
+_graph_client_factory: GraphClientFactory | None = None
 
 
 def get_graph_client() -> GraphServiceClient:
-    """Return (or create) the Microsoft Graph client."""
-    global _graph_client
-    if _graph_client is None:
-        if not Config.validate():
-            missing = Config.get_missing_vars()
-            raise ValueError(
-                f"Missing required environment variables: {', '.join(missing)}. "
-                "Please configure them in .env file."
-            )
-        assert TENANT_ID is not None
-        assert CLIENT_ID is not None
-        assert CLIENT_SECRET is not None
-        credential = ClientSecretCredential(
-            tenant_id=TENANT_ID,
-            client_id=CLIENT_ID,
-            client_secret=CLIENT_SECRET,
-        )
-        _graph_client = GraphServiceClient(credentials=credential, scopes=SCOPES)
-        logger.info("Microsoft Graph client initialised successfully")
-    return _graph_client
+    """Return a Graph client authorized for the current user or autonomous agent."""
+    global _graph_client_factory
+    if _graph_client_factory is None:
+        _graph_client_factory = GraphClientFactory.from_environment()
+    return _graph_client_factory.get_client(get_request_identity())
+
+
+async def _get_graph_access_token() -> str:
+    global _graph_client_factory
+    if _graph_client_factory is None:
+        _graph_client_factory = GraphClientFactory.from_environment()
+    return await _graph_client_factory.get_access_token(get_request_identity())
 
 
 async def _run_hunting(query: str, timespan: str | None = None) -> dict:
     """Execute a KQL hunting query and return raw result dict."""
+    authorize_current_identity(agent_role="Mcp.Hunt")
     client = get_graph_client()
     body = RunHuntingQueryPostRequestBody()
     body.query = query
@@ -110,6 +161,90 @@ async def _run_hunting(query: str, timespan: str | None = None) -> dict:
 
 def _json(obj: Any) -> str:
     return json.dumps(obj, indent=2, default=str)
+
+
+def _error_response(operation: str, error: Exception) -> str:
+    """Log an internal exception and return a stable client-safe response."""
+    logger.error("%s failed: %s", operation, error, exc_info=True)
+    return _json(
+        {
+            "status": "error",
+            "error": "Operation failed",
+            "error_code": "UPSTREAM_OR_INTERNAL_ERROR",
+        }
+    )
+
+
+def _build_alert_statistics_query(kql_time: str) -> str:
+    return f"""
+let Alerts = AlertInfo
+| where Timestamp > ago({kql_time})
+| summarize
+    TotalAlerts = dcount(AlertId),
+    HighSeverity = dcountif(AlertId, Severity == "High"),
+    MediumSeverity = dcountif(AlertId, Severity == "Medium"),
+    LowSeverity = dcountif(AlertId, Severity == "Low"),
+    TopCategories = make_set(Category, 10)
+| extend JoinKey = 1;
+let Evidence = AlertEvidence
+| where Timestamp > ago({kql_time}) and isnotempty(DeviceId)
+| summarize UniqueDevices = dcount(DeviceId)
+| extend JoinKey = 1;
+Alerts
+| join kind=leftouter Evidence on JoinKey
+| project-away JoinKey, JoinKey1
+"""
+
+
+def _conditional_access_state_matches(actual_state: Any, requested_state: str) -> bool:
+    if requested_state == "all":
+        return True
+    return str(actual_state).lower() == requested_state.lower()
+
+
+def _audit_target_matches(target_resources: list[Any] | None, target: str | None) -> bool:
+    if not target:
+        return True
+    if not target_resources:
+        return False
+    target_lower = target.lower()
+    return any(
+        target_lower in (resource.display_name or "").lower() for resource in target_resources
+    )
+
+
+def _build_data_exfiltration_queries(days: int, exfil_type: str) -> dict[str, str]:
+    queries: dict[str, str] = {}
+    if exfil_type in ("all", "large_transfers"):
+        queries["large_transfers"] = f"""
+DeviceNetworkEvents | where Timestamp > ago({days}d) | where ActionType == "ConnectionSuccess"
+| where RemoteIPType == "Public"
+| summarize Connections=count(), RemotePorts=dcount(RemotePort)
+  by DeviceName, InitiatingProcessAccountName, RemoteIP, InitiatingProcessFileName
+| where Connections > 100 or RemotePorts > 20
+| order by Connections desc | limit 100"""
+    if exfil_type in ("all", "cloud_storage"):
+        queries["cloud_storage"] = f"""
+let CS=dynamic(['dropbox.com','drive.google.com','onedrive.live.com','box.com','wetransfer.com','mega.nz','mediafire.com','sendspace.com']);
+DeviceNetworkEvents | where Timestamp > ago({days}d) | where RemoteUrl has_any (CS) | where ActionType == "ConnectionSuccess"
+| summarize Connections=count(), FirstSeen=min(Timestamp), LastSeen=max(Timestamp)
+  by DeviceName, InitiatingProcessAccountName, RemoteUrl, InitiatingProcessFileName
+| where Connections > 10 | order by Connections desc | limit 100"""
+    if exfil_type in ("all", "dns_tunneling"):
+        queries["dns_tunneling"] = f"""
+DeviceNetworkEvents | where Timestamp > ago({days}d) | where RemotePort == 53
+| extend QLen=strlen(RemoteUrl) | where QLen > 50
+| summarize Cnt=count(), Avg=avg(QLen), Max=max(QLen) by DeviceName, RemoteIP
+| where Cnt > 100 and Avg > 40 | order by Cnt desc | limit 100"""
+    if exfil_type in ("all", "archives"):
+        queries["archives"] = f"""
+DeviceProcessEvents | where Timestamp > ago({days}d)
+| where FileName in~ ("7z.exe","rar.exe","zip.exe","tar.exe","winrar.exe","winzip.exe")
+    or ProcessCommandLine has_any ("Compress-Archive","System.IO.Compression")
+| where ProcessCommandLine has_any ("-p","-password","SecureString","ConvertTo-SecureString")
+    or InitiatingProcessFileName in~ ("powershell.exe","cmd.exe")
+| project Timestamp, DeviceName, AccountName, FileName, ProcessCommandLine | limit 100"""
+    return queries
 
 
 # =========================================================================
@@ -177,6 +312,39 @@ TABLES_REF = """# Microsoft Defender Advanced Hunting Tables
 ## Alert Tables
 - AlertEvidence · AlertInfo
 """
+
+
+@mcp.resource("defender://capabilities")
+def resource_capabilities() -> str:
+    """Versioned runtime capability and integration metadata."""
+    return _json(
+        {
+            "server": "defender_hunt_mcp",
+            "server_version": "3.0.0",
+            "contract_version": "1.0.0",
+            "auth_modes": ["entra_delegated_obo", "entra_application_managed_identity"],
+            "capabilities": {
+                "atomic_tools": {"status": "stable"},
+                "workflow_tools": {"status": "beta"},
+                "agent_governance": {
+                    "status": "beta"
+                    if AgentGovernanceClient.enabled_from_environment()
+                    else "disabled",
+                    "feature_flag": "ENABLE_AGENT_GOVERNANCE_BETA",
+                },
+                "cache": {
+                    "local_backend": "redis",
+                    "azure_backend": "azure_managed_redis",
+                },
+            },
+            "limits": {
+                "ioc_batch": 20,
+                "workflow_concurrency": 8,
+                "evidence_items": 50,
+                "advanced_hunting_days": 30,
+            },
+        }
+    )
 
 
 @mcp.resource("defender://hunting/examples")
@@ -247,7 +415,7 @@ def resource_conditional_access() -> str:
 # =========================================================================
 
 
-@mcp.tool()
+@read_only_tool()
 async def run_hunting_query(
     query: Annotated[
         str,
@@ -282,14 +450,12 @@ async def run_hunting_query(
         result = await _run_hunting(query, timespan)
         return _json(result)
     except APIError as e:
-        logger.error("Graph API error: %s", e)
-        return _json({"status": "error", "error": f"Microsoft Graph API Error: {e}"})
+        return _error_response("run_hunting_query", e)
     except Exception as e:
-        logger.error("Unexpected error: %s", e, exc_info=True)
-        return _json({"status": "error", "error": str(e)})
+        return _error_response("run_hunting_query", e)
 
 
-@mcp.tool()
+@read_only_tool()
 async def validate_kql_query(
     query: Annotated[str, Field(description="KQL query to validate")],
 ) -> str:
@@ -338,15 +504,11 @@ async def validate_kql_query(
 # =========================================================================
 
 
-@mcp.tool()
+@read_only_tool()
 async def get_security_alerts(
-    severity: Annotated[
-        str | None, Field(description="Filter: informational|low|medium|high|unknown")
-    ] = None,
-    status: Annotated[
-        str | None, Field(description="Filter: new|inProgress|resolved|unknown")
-    ] = None,
-    top: Annotated[int, Field(description="Number of alerts (default 50, max 100)")] = 50,
+    severity: Annotated[AlertSeverity | None, Field(description="Alert severity filter")] = None,
+    status: Annotated[AlertStatus | None, Field(description="Alert status filter")] = None,
+    top: ResultLimit100 = 50,
 ) -> str:
     """Retrieve security alerts from Microsoft Defender."""
     try:
@@ -357,9 +519,9 @@ async def get_security_alerts(
         client = get_graph_client()
         filters = []
         if severity:
-            filters.append(f"severity eq '{severity}'")
+            filters.append(f"severity eq {quote_odata_string(severity)}")
         if status:
-            filters.append(f"status eq '{status}'")
+            filters.append(f"status eq {quote_odata_string(status)}")
         filter_query = " and ".join(filters) if filters else None
 
         query_params = AlertsV2RequestBuilder.AlertsV2RequestBuilderGetQueryParameters(
@@ -388,11 +550,10 @@ async def get_security_alerts(
             return _json({"status": "success", "count": len(alert_list), "alerts": alert_list})
         return _json({"status": "success", "count": 0, "alerts": [], "message": "No alerts found"})
     except Exception as e:
-        logger.error("Error fetching alerts: %s", e, exc_info=True)
-        return _json({"status": "error", "error": str(e)})
+        return _error_response("get_security_alerts", e)
 
 
-@mcp.tool()
+@read_only_tool()
 async def get_alert_details(
     alert_id: Annotated[str, Field(description="Unique alert identifier")],
 ) -> str:
@@ -422,34 +583,21 @@ async def get_alert_details(
             return _json({"status": "success", "alert": details})
         return _json({"status": "error", "error": "Alert not found"})
     except Exception as e:
-        logger.error("Error fetching alert details: %s", e, exc_info=True)
-        return _json({"status": "error", "error": str(e)})
+        return _error_response("get_alert_details", e)
 
 
-@mcp.tool()
+@read_only_tool()
 async def get_alert_statistics(
     time_range: Annotated[str, Field(description="Time range: 1h|24h|7d|30d")] = "24h",
 ) -> str:
     """Get statistical summary of security alerts."""
     kql_time = {"1h": "1h", "24h": "1d", "7d": "7d", "30d": "30d"}.get(time_range, "1d")
     try:
-        result = await _run_hunting(f"""
-AlertInfo
-| where Timestamp > ago({kql_time})
-| join kind=leftouter (AlertEvidence | where Timestamp > ago({kql_time}) | where isnotempty(DeviceId) | project AlertId, DeviceId) on AlertId
-| summarize
-    TotalAlerts = count(),
-    HighSeverity = countif(Severity == "High"),
-    MediumSeverity = countif(Severity == "Medium"),
-    LowSeverity = countif(Severity == "Low"),
-    UniqueDevices = dcount(DeviceId),
-    TopCategories = make_set(Category, 10)
-""")
+        result = await _run_hunting(_build_alert_statistics_query(kql_time))
         stats = result.get("results", [{}])[0] if result.get("results") else {}
         return _json({"status": "success", "time_range": time_range, "statistics": stats})
     except Exception as e:
-        logger.error("Error getting alert statistics: %s", e, exc_info=True)
-        return _json({"status": "error", "error": str(e)})
+        return _error_response("get_alert_statistics", e)
 
 
 # =========================================================================
@@ -457,52 +605,46 @@ AlertInfo
 # =========================================================================
 
 
-@mcp.tool()
+@read_only_tool()
 async def get_threat_indicators(
-    indicator_type: Annotated[
-        str | None,
-        Field(description="Type: domainName|url|fileSha256|fileSha1|fileMd5|ipAddress"),
-    ] = None,
-    top: Annotated[int, Field(description="Number of indicators (default 50, max 100)")] = 50,
+    top: ResultLimit100 = 50,
 ) -> str:
     """Retrieve Threat Intelligence Indicators (IoCs) from Microsoft Defender."""
     try:
-        from msgraph.generated.security.threat_intelligence.intel_profiles.intel_profiles_request_builder import (
-            IntelProfilesRequestBuilder,
+        from msgraph.generated.security.threat_intelligence.intelligence_profile_indicators.intelligence_profile_indicators_request_builder import (
+            IntelligenceProfileIndicatorsRequestBuilder,
         )
 
         client = get_graph_client()
 
-        query_params = IntelProfilesRequestBuilder.IntelProfilesRequestBuilderGetQueryParameters(
+        query_params = IntelligenceProfileIndicatorsRequestBuilder.IntelligenceProfileIndicatorsRequestBuilderGetQueryParameters(
             top=min(top, 100),
-            filter=f"threatType eq '{indicator_type}'" if indicator_type else None,
+            select=["id", "source", "firstSeenDateTime", "lastSeenDateTime", "artifact"],
         )
-        request_config = (
-            IntelProfilesRequestBuilder.IntelProfilesRequestBuilderGetRequestConfiguration(
-                query_parameters=query_params,
-            )
+        request_config = IntelligenceProfileIndicatorsRequestBuilder.IntelligenceProfileIndicatorsRequestBuilderGetRequestConfiguration(
+            query_parameters=query_params,
         )
-        indicators = await client.security.threat_intelligence.intel_profiles.get(
+        indicators = await client.security.threat_intelligence.intelligence_profile_indicators.get(
             request_configuration=request_config
         )
         if indicators and indicators.value:
             lst = [
                 {
                     "id": i.id,
-                    "kind": getattr(i, "kind", None),
-                    "description": getattr(i, "description", None),
-                    "firstActiveDateTime": str(getattr(i, "first_active_date_time", None)),
+                    "source": i.source,
+                    "firstSeenDateTime": str(i.first_seen_date_time),
+                    "lastSeenDateTime": str(i.last_seen_date_time),
+                    "artifact": str(i.artifact) if i.artifact else None,
                 }
                 for i in indicators.value
             ]
             return _json({"status": "success", "count": len(lst), "indicators": lst})
         return _json({"status": "success", "count": 0, "indicators": []})
     except Exception as e:
-        logger.error("Error fetching indicators: %s", e, exc_info=True)
-        return _json({"status": "error", "error": str(e)})
+        return _error_response("get_threat_indicators", e)
 
 
-@mcp.tool()
+@read_only_tool()
 async def enrich_ioc(
     ioc_value: Annotated[str, Field(description="The IoC value (IP, domain, URL, or file hash)")],
     ioc_type: Annotated[str, Field(description="Type: ip|domain|url|hash")],
@@ -510,30 +652,31 @@ async def enrich_ioc(
     """Enrich an Indicator of Compromise with threat intelligence from Defender data."""
     if not ioc_value or not ioc_type:
         return _json({"status": "error", "error": "ioc_value and ioc_type are required"})
+    ioc_literal = quote_kql_string(ioc_value)
     queries = {
         "hash": f"""
-let iocHash = "{ioc_value}";
+let iocHash = {ioc_literal};
 union DeviceFileEvents, DeviceProcessEvents, DeviceImageLoadEvents
 | where SHA256 =~ iocHash or SHA1 =~ iocHash or MD5 =~ iocHash
 | summarize FirstSeen=min(Timestamp), LastSeen=max(Timestamp),
             Occurrences=count(), AffectedDevices=dcount(DeviceName),
             Devices=make_set(DeviceName,10) by SHA256, FileName""",
         "ip": f"""
-let iocIP = "{ioc_value}";
+let iocIP = {ioc_literal};
 DeviceNetworkEvents
 | where RemoteIP == iocIP or LocalIP == iocIP
 | summarize FirstSeen=min(Timestamp), LastSeen=max(Timestamp),
             Connections=count(), AffectedDevices=dcount(DeviceName),
             Devices=make_set(DeviceName,10), Ports=make_set(RemotePort,20) by RemoteIP""",
         "domain": f"""
-let iocDomain = "{ioc_value}";
+let iocDomain = {ioc_literal};
 DeviceNetworkEvents
 | where RemoteUrl has iocDomain
 | summarize FirstSeen=min(Timestamp), LastSeen=max(Timestamp),
             Connections=count(), AffectedDevices=dcount(DeviceName),
             Devices=make_set(DeviceName,10), URLs=make_set(RemoteUrl,10) by RemoteUrl""",
         "url": f"""
-let iocUrl = "{ioc_value}";
+let iocUrl = {ioc_literal};
 union DeviceNetworkEvents, EmailUrlInfo
 | where RemoteUrl =~ iocUrl or Url =~ iocUrl
 | summarize FirstSeen=min(Timestamp), LastSeen=max(Timestamp), Occurrences=count()""",
@@ -555,23 +698,23 @@ union DeviceNetworkEvents, EmailUrlInfo
             }
         )
     except Exception as e:
-        logger.error("Error enriching IoC: %s", e, exc_info=True)
-        return _json({"status": "error", "error": str(e)})
+        return _error_response("enrich_ioc", e)
 
 
-@mcp.tool()
+@read_only_tool()
 async def hunt_by_ioc(
     ioc_value: Annotated[str, Field(description="The IoC to hunt (IP, domain, URL, or hash)")],
     ioc_type: Annotated[str, Field(description="Type: ip|domain|url|hash|process")],
-    days_back: Annotated[int, Field(description="Days to look back (default 30, max 30)")] = 30,
+    days_back: DaysBack30 = 30,
 ) -> str:
     """Automatically hunt for an IoC across all relevant Defender tables."""
     if not ioc_value or not ioc_type:
         return _json({"status": "error", "error": "ioc_value and ioc_type required"})
     days = min(days_back, 30)
+    ioc_literal = quote_kql_string(ioc_value)
     queries = {
         "hash": f"""
-let ioc = "{ioc_value}"; let tr = {days}d;
+let ioc = {ioc_literal}; let tr = {days}d;
 union
   (DeviceProcessEvents | where Timestamp > ago(tr) | where SHA256 =~ ioc or SHA1 =~ ioc or MD5 =~ ioc
    | project Timestamp, Table="Process", DeviceName, FileName, ProcessCommandLine, AccountName, SHA256),
@@ -581,24 +724,24 @@ union
    | project Timestamp, Table="ImageLoad", DeviceName, FileName, FolderPath, InitiatingProcessFileName, SHA256)
 | sort by Timestamp desc | limit 1000""",
         "ip": f"""
-let ioc = "{ioc_value}";
+let ioc = {ioc_literal};
 DeviceNetworkEvents | where Timestamp > ago({days}d)
 | where RemoteIP == ioc or LocalIP == ioc
 | project Timestamp, DeviceName, RemoteIP, RemotePort, RemoteUrl, LocalIP, LocalPort, Protocol, ActionType, InitiatingProcessFileName, InitiatingProcessCommandLine
 | sort by Timestamp desc | limit 1000""",
         "domain": f"""
-let ioc = "{ioc_value}";
+let ioc = {ioc_literal};
 DeviceNetworkEvents | where Timestamp > ago({days}d) | where RemoteUrl has ioc
 | project Timestamp, DeviceName, RemoteUrl, RemoteIP, InitiatingProcessFileName, InitiatingProcessCommandLine, ActionType
 | sort by Timestamp desc | limit 1000""",
         "process": f"""
-let ioc = "{ioc_value}";
+let ioc = {ioc_literal};
 DeviceProcessEvents | where Timestamp > ago({days}d)
 | where FileName =~ ioc or ProcessCommandLine has ioc
 | project Timestamp, DeviceName, FileName, ProcessCommandLine, AccountName, InitiatingProcessFileName, SHA256
 | sort by Timestamp desc | limit 1000""",
         "url": f"""
-let ioc = "{ioc_value}";
+let ioc = {ioc_literal};
 union DeviceNetworkEvents, EmailUrlInfo
 | where Timestamp > ago({days}d)
 | where RemoteUrl =~ ioc or Url =~ ioc
@@ -624,8 +767,7 @@ union DeviceNetworkEvents, EmailUrlInfo
             }
         )
     except Exception as e:
-        logger.error("Error hunting IoC: %s", e, exc_info=True)
-        return _json({"status": "error", "error": str(e)})
+        return _error_response("hunt_by_ioc", e)
 
 
 # =========================================================================
@@ -633,53 +775,71 @@ union DeviceNetworkEvents, EmailUrlInfo
 # =========================================================================
 
 
-@mcp.tool()
+@read_only_tool()
 async def get_security_recommendations(
     recommendation_category: Annotated[
         str | None, Field(description="Category: application|identity|data|device|network")
     ] = None,
-    top: Annotated[int, Field(description="Number of recommendations (default 50)")] = 50,
+    top: ResultLimit100 = 50,
 ) -> str:
     """Retrieve security recommendations from Microsoft Defender."""
     try:
-        from msgraph.generated.security.secure_scores.secure_scores_request_builder import (
-            SecureScoresRequestBuilder,
+        result, cache_metadata = await cached_operation(
+            "secure_score_control_profiles",
+            {"category": recommendation_category, "top": top},
+            3600,
+            lambda: _fetch_security_recommendations(recommendation_category, top),
         )
-
-        client = get_graph_client()
-
-        query_params = SecureScoresRequestBuilder.SecureScoresRequestBuilderGetQueryParameters(
-            top=min(top, 100),
-            filter=f"category eq '{recommendation_category}'" if recommendation_category else None,
-        )
-        request_config = (
-            SecureScoresRequestBuilder.SecureScoresRequestBuilderGetRequestConfiguration(
-                query_parameters=query_params,
-            )
-        )
-        recs = await client.security.secure_scores.get(request_configuration=request_config)
-        if recs and recs.value:
-            lst = [
-                {
-                    "id": r.id,
-                    "activeUserCount": r.active_user_count,
-                    "createdDateTime": str(r.created_date_time),
-                    "currentScore": r.current_score,
-                    "maxScore": r.max_score,
-                    "vendorInformation": str(r.vendor_information)
-                    if r.vendor_information
-                    else None,
-                }
-                for r in recs.value
-            ]
-            return _json({"status": "success", "count": len(lst), "recommendations": lst})
-        return _json({"status": "success", "count": 0, "message": "No recommendations available"})
+        return _json({**result, **cache_metadata})
     except Exception as e:
-        logger.error("Error fetching recommendations: %s", e, exc_info=True)
-        return _json({"status": "error", "error": str(e)})
+        return _error_response("get_security_recommendations", e)
 
 
-@mcp.tool()
+async def _fetch_security_recommendations(
+    recommendation_category: str | None,
+    top: int,
+) -> dict[str, Any]:
+    from msgraph.generated.security.secure_score_control_profiles.secure_score_control_profiles_request_builder import (
+        SecureScoreControlProfilesRequestBuilder,
+    )
+
+    query_params = SecureScoreControlProfilesRequestBuilder.SecureScoreControlProfilesRequestBuilderGetQueryParameters(
+        top=min(top, 100),
+        filter=f"controlCategory eq {quote_odata_string(recommendation_category)}"
+        if recommendation_category
+        else None,
+    )
+    request_config = SecureScoreControlProfilesRequestBuilder.SecureScoreControlProfilesRequestBuilderGetRequestConfiguration(
+        query_parameters=query_params,
+    )
+    recs = await get_graph_client().security.secure_score_control_profiles.get(
+        request_configuration=request_config
+    )
+    recommendations = [
+        {
+            "id": item.id,
+            "title": item.title,
+            "category": item.control_category,
+            "service": item.service,
+            "rank": item.rank,
+            "maxScore": item.max_score,
+            "implementationCost": str(item.implementation_cost),
+            "userImpact": str(item.user_impact),
+            "remediation": item.remediation,
+            "remediationImpact": item.remediation_impact,
+            "threats": [str(threat) for threat in (item.threats or [])],
+            "lastModifiedDateTime": str(item.last_modified_date_time),
+        }
+        for item in (recs.value if recs and recs.value else [])
+    ]
+    return {
+        "status": "success",
+        "count": len(recommendations),
+        "recommendations": recommendations,
+    }
+
+
+@read_only_tool()
 async def get_device_info(
     device_name: Annotated[str, Field(description="Name or ID of the device")],
 ) -> str:
@@ -687,9 +847,10 @@ async def get_device_info(
     if not device_name:
         return _json({"status": "error", "error": "device_name is required"})
     try:
+        device_literal = quote_kql_string(device_name)
         result = await _run_hunting(f"""
 DeviceInfo
-| where DeviceName =~ "{device_name}" or DeviceId =~ "{device_name}"
+| where DeviceName =~ {device_literal} or DeviceId =~ {device_literal}
 | top 1 by Timestamp desc
 | project Timestamp, DeviceName, DeviceId, OSPlatform, OSVersion,
           OSArchitecture, IsAzureADJoined, MachineGroup, PublicIP, OnboardingStatus""")
@@ -697,24 +858,23 @@ DeviceInfo
             return _json({"status": "success", "device": result["results"][0]})
         return _json({"status": "error", "error": "Device not found"})
     except Exception as e:
-        logger.error("Error fetching device info: %s", e, exc_info=True)
-        return _json({"status": "error", "error": str(e)})
+        return _error_response("get_device_info", e)
 
 
-@mcp.tool()
+@read_only_tool()
 async def investigate_user_logon(
     username: Annotated[str, Field(description="Username or UPN to investigate")],
-    days_back: Annotated[int, Field(description="Days to look back (default 30, max 90)")] = 30,
+    days_back: DaysBack90 = 30,
 ) -> str:
     """Comprehensive investigation of user logon activity with built-in analysis."""
     if not username:
         return "Error: username parameter is required"
     days = min(days_back, 90)
-    # Parse UPN: if "user@domain" split into parts for flexible matching
+    username_literal = quote_kql_string(username)
     if "@" in username:
-        kql_filter_user = f' | where AccountUpn == @"{username}"'
+        kql_filter_user = f" | where AccountUpn == {username_literal}"
     else:
-        kql_filter_user = f' | where AccountName == "{username}"'
+        kql_filter_user = f" | where AccountName == {username_literal}"
     try:
         kql_filter = kql_filter_user
         kql = f"""
@@ -800,11 +960,10 @@ IdentityLogonEvents
         lines.append("=" * 80)
         return "\n".join(lines)
     except Exception as e:
-        logger.error("Error investigating user logon: %s", e, exc_info=True)
-        return f"Error: {e}"
+        return _error_response("investigate_user_logon", e)
 
 
-@mcp.tool()
+@read_only_tool()
 async def get_environment_dashboard(
     time_range: Annotated[str, Field(description="Time range: 1h|24h|7d|30d")] = "24h",
 ) -> str:
@@ -898,11 +1057,10 @@ DeviceNetworkEvents | where Timestamp > ago({kql_time})
         lines.append("Dashboard generated successfully")
         return "\n".join(lines)
     except Exception as e:
-        logger.error("Error generating dashboard: %s", e, exc_info=True)
-        return f"Error generating dashboard: {e}"
+        return _error_response("get_environment_dashboard", e)
 
 
-@mcp.tool()
+@read_only_tool()
 async def analyze_security_posture(
     focus_area: Annotated[
         str, Field(description="Focus: all|identity|devices|network|applications")
@@ -967,8 +1125,7 @@ DeviceNetworkEvents | where Timestamp > ago(24h) | where RemoteIPType == "Public
         ]
         return "\n".join(lines)
     except Exception as e:
-        logger.error("Error analysing security posture: %s", e, exc_info=True)
-        return f"Error: {e}"
+        return _error_response("analyze_security_posture", e)
 
 
 # =========================================================================
@@ -976,16 +1133,16 @@ DeviceNetworkEvents | where Timestamp > ago(24h) | where RemoteIPType == "Public
 # =========================================================================
 
 
-@mcp.tool()
+@read_only_tool()
 async def get_signin_logs(
     user_principal_name: Annotated[
         str | None, Field(description="Filter by UPN (partial match)")
     ] = None,
     app_display_name: Annotated[str | None, Field(description="Filter by application name")] = None,
-    status: Annotated[str, Field(description="success|failure|all")] = "all",
-    risk_level: Annotated[str, Field(description="none|low|medium|high|all")] = "all",
-    days_back: Annotated[int, Field(description="Days back (default 7, max 30)")] = 7,
-    top: Annotated[int, Field(description="Max results (default 100, max 500)")] = 100,
+    status: Annotated[SignInStatus, Field(description="Sign-in result filter")] = "all",
+    risk_level: Annotated[RiskLevel, Field(description="Risk level filter")] = "all",
+    days_back: DaysBack30 = 7,
+    top: ResultLimit500 = 100,
 ) -> str:
     """Retrieve Microsoft Entra ID sign-in logs."""
     days = min(days_back, 30)
@@ -995,15 +1152,17 @@ async def get_signin_logs(
         start = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
         filters = [f"createdDateTime ge {start}"]
         if user_principal_name:
-            filters.append(f"startswith(userPrincipalName, '{user_principal_name}')")
+            filters.append(
+                f"startswith(userPrincipalName, {quote_odata_string(user_principal_name)})"
+            )
         if app_display_name:
-            filters.append(f"contains(appDisplayName, '{app_display_name}')")
+            filters.append(f"contains(appDisplayName, {quote_odata_string(app_display_name)})")
         if status == "success":
             filters.append("status/errorCode eq 0")
         elif status == "failure":
             filters.append("status/errorCode ne 0")
         if risk_level != "all":
-            filters.append(f"riskLevelDuringSignIn eq '{risk_level}'")
+            filters.append(f"riskLevelDuringSignIn eq {quote_odata_string(risk_level)}")
 
         from msgraph.generated.audit_logs.sign_ins.sign_ins_request_builder import (
             SignInsRequestBuilder,
@@ -1055,11 +1214,10 @@ async def get_signin_logs(
         ]
         return _json({"status": "success", "count": len(logs), "logs": logs})
     except Exception as e:
-        logger.error("Error retrieving sign-in logs: %s", e, exc_info=True)
-        return _json({"status": "error", "error": str(e)})
+        return _error_response("get_signin_logs", e)
 
 
-@mcp.tool()
+@read_only_tool()
 async def get_audit_logs(
     category: Annotated[
         str,
@@ -1074,8 +1232,8 @@ async def get_audit_logs(
     target_resource: Annotated[
         str | None, Field(description="Filter by target resource name")
     ] = None,
-    days_back: Annotated[int, Field(description="Days back (default 7, max 30)")] = 7,
-    top: Annotated[int, Field(description="Max results (default 100, max 500)")] = 100,
+    days_back: DaysBack30 = 7,
+    top: ResultLimit500 = 100,
 ) -> str:
     """Retrieve Microsoft Entra ID audit logs."""
     days = min(days_back, 30)
@@ -1085,9 +1243,11 @@ async def get_audit_logs(
         start = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
         filters = [f"activityDateTime ge {start}"]
         if category != "all":
-            filters.append(f"category eq '{category}'")
+            filters.append(f"category eq {quote_odata_string(category)}")
         if activity_display_name:
-            filters.append(f"contains(activityDisplayName, '{activity_display_name}')")
+            filters.append(
+                f"contains(activityDisplayName, {quote_odata_string(activity_display_name)})"
+            )
 
         from msgraph.generated.audit_logs.directory_audits.directory_audits_request_builder import (
             DirectoryAuditsRequestBuilder,
@@ -1118,14 +1278,7 @@ async def get_audit_logs(
                     name = log.initiated_by.app.display_name or ""
                 if initiated_by.lower() not in name.lower():
                     continue
-            if (
-                target_resource
-                and log.target_resources
-                and not any(
-                    target_resource.lower() in (t.display_name or "").lower()
-                    for t in log.target_resources
-                )
-            ):
+            if not _audit_target_matches(log.target_resources, target_resource):
                 continue
             logs.append(
                 {
@@ -1155,17 +1308,14 @@ async def get_audit_logs(
             )
         return _json({"status": "success", "count": len(logs), "logs": logs})
     except Exception as e:
-        logger.error("Error retrieving audit logs: %s", e, exc_info=True)
-        return _json({"status": "error", "error": str(e)})
+        return _error_response("get_audit_logs", e)
 
 
-@mcp.tool()
+@read_only_tool()
 async def get_risky_users(
-    risk_level: Annotated[str, Field(description="low|medium|high|all")] = "all",
-    risk_state: Annotated[
-        str, Field(description="atRisk|confirmedCompromised|remediated|dismissed|all")
-    ] = "atRisk",
-    top: Annotated[int, Field(description="Max results (default 50, max 200)")] = 50,
+    risk_level: Annotated[RiskLevel, Field(description="Risk level filter")] = "all",
+    risk_state: Annotated[RiskState, Field(description="Risk state filter")] = "atRisk",
+    top: ResultLimit200 = 50,
 ) -> str:
     """Retrieve users flagged as risky by Entra ID Identity Protection."""
     top = min(top, Config.MAX_RISKY_USERS)
@@ -1173,9 +1323,9 @@ async def get_risky_users(
         client = get_graph_client()
         filters = []
         if risk_state != "all":
-            filters.append(f"riskState eq '{risk_state}'")
+            filters.append(f"riskState eq {quote_odata_string(risk_state)}")
         if risk_level != "all":
-            filters.append(f"riskLevel eq '{risk_level}'")
+            filters.append(f"riskLevel eq {quote_odata_string(risk_level)}")
 
         from msgraph.generated.identity_protection.risky_users.risky_users_request_builder import (
             RiskyUsersRequestBuilder,
@@ -1219,19 +1369,32 @@ async def get_risky_users(
             }
         )
     except Exception as e:
-        logger.error("Error retrieving risky users: %s", e, exc_info=True)
-        return _json({"status": "error", "error": str(e)})
+        return _error_response("get_risky_users", e)
 
 
-@mcp.tool()
+def _build_risky_signins_filter(
+    start: str,
+    user_principal_name: str | None,
+    risk_level: RiskLevel,
+    risk_state: RiskState,
+) -> str:
+    filters = [f"createdDateTime ge {start}", "riskLevelDuringSignIn ne 'none'"]
+    if user_principal_name:
+        filters.append(f"userPrincipalName eq {quote_odata_string(user_principal_name)}")
+    if risk_level != "all":
+        filters.append(f"riskLevelDuringSignIn eq {quote_odata_string(risk_level)}")
+    if risk_state != "all":
+        filters.append(f"riskState eq {quote_odata_string(risk_state)}")
+    return " and ".join(filters)
+
+
+@read_only_tool()
 async def get_risky_signins(
     user_principal_name: Annotated[str | None, Field(description="Filter by UPN")] = None,
-    risk_level: Annotated[str, Field(description="low|medium|high|all")] = "all",
-    risk_state: Annotated[
-        str, Field(description="atRisk|confirmedCompromised|remediated|dismissed|all")
-    ] = "all",
-    days_back: Annotated[int, Field(description="Days back (default 7, max 30)")] = 7,
-    top: Annotated[int, Field(description="Max results (default 100, max 500)")] = 100,
+    risk_level: Annotated[RiskLevel, Field(description="Risk level filter")] = "all",
+    risk_state: Annotated[RiskState, Field(description="Risk state filter")] = "all",
+    days_back: DaysBack30 = 7,
+    top: ResultLimit500 = 100,
 ) -> str:
     """Retrieve risky sign-in events from Entra ID Identity Protection."""
     days = min(days_back, 30)
@@ -1239,11 +1402,12 @@ async def get_risky_signins(
     try:
         client = get_graph_client()
         start = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        risk_filter = f"createdDateTime ge {start} and riskLevelDuringSignIn ne 'none'"
-        if user_principal_name:
-            risk_filter += f" and userPrincipalName eq '{user_principal_name}'"
-        if risk_level != "all":
-            risk_filter += f" and riskLevelDuringSignIn eq '{risk_level}'"
+        risk_filter = _build_risky_signins_filter(
+            start,
+            user_principal_name,
+            risk_level,
+            risk_state,
+        )
 
         from msgraph.generated.audit_logs.sign_ins.sign_ins_request_builder import (
             SignInsRequestBuilder,
@@ -1291,11 +1455,10 @@ async def get_risky_signins(
             }
         )
     except Exception as e:
-        logger.error("Error retrieving risky sign-ins: %s", e, exc_info=True)
-        return _json({"status": "error", "error": str(e)})
+        return _error_response("get_risky_signins", e)
 
 
-@mcp.tool()
+@read_only_tool()
 async def get_conditional_access_policies(
     state: Annotated[
         str, Field(description="enabled|disabled|enabledForReportingButNotEnforced|all")
@@ -1304,51 +1467,63 @@ async def get_conditional_access_policies(
 ) -> str:
     """Retrieve Conditional Access policies and their configurations."""
     try:
-        client = get_graph_client()
-        result = await client.identity.conditional_access.policies.get()
-        if not result or not result.value:
-            return _json({"status": "success", "count": 0, "message": "No CA policies found"})
-        policies = []
-        for p in result.value:
-            ps = str(p.state).lower() if p.state else ""
-            if state != "all" and state.lower() not in ps:
-                continue
-            entry: dict[str, Any] = {
-                "id": p.id,
-                "displayName": p.display_name,
-                "state": str(p.state) if p.state else None,
-            }
-            if include_details and p.conditions:
-                entry["conditions"] = {
-                    "users": {
-                        "include": p.conditions.users.include_users,
-                        "exclude": p.conditions.users.exclude_users,
-                    }
-                    if p.conditions.users
-                    else None,
-                    "applications": {"include": p.conditions.applications.include_applications}
-                    if p.conditions.applications
-                    else None,
-                    "signInRiskLevels": [str(r) for r in (p.conditions.sign_in_risk_levels or [])]
-                    if p.conditions.sign_in_risk_levels
-                    else None,
-                }
-            if include_details and p.grant_controls:
-                entry["grantControls"] = {
-                    "operator": p.grant_controls.operator,
-                    "builtInControls": [str(c) for c in (p.grant_controls.built_in_controls or [])],
-                }
-            policies.append(entry)
-        return _json({"status": "success", "count": len(policies), "policies": policies})
+        result, cache_metadata = await cached_operation(
+            "conditional_access_policies",
+            {"state": state, "include_details": include_details},
+            1800,
+            lambda: _fetch_conditional_access_policies(state, include_details),
+        )
+        return _json({**result, **cache_metadata})
     except Exception as e:
-        logger.error("Error retrieving CA policies: %s", e, exc_info=True)
-        return _json({"status": "error", "error": str(e)})
+        return _error_response("get_conditional_access_policies", e)
 
 
-@mcp.tool()
+async def _fetch_conditional_access_policies(
+    state: str,
+    include_details: bool,
+) -> dict[str, Any]:
+    result = await get_graph_client().identity.conditional_access.policies.get()
+    policies = []
+    for policy in result.value if result and result.value else []:
+        if not _conditional_access_state_matches(policy.state, state):
+            continue
+        entry: dict[str, Any] = {
+            "id": policy.id,
+            "displayName": policy.display_name,
+            "state": str(policy.state) if policy.state else None,
+        }
+        if include_details and policy.conditions:
+            entry["conditions"] = {
+                "users": {
+                    "include": policy.conditions.users.include_users,
+                    "exclude": policy.conditions.users.exclude_users,
+                }
+                if policy.conditions.users
+                else None,
+                "applications": {"include": policy.conditions.applications.include_applications}
+                if policy.conditions.applications
+                else None,
+                "signInRiskLevels": [
+                    str(risk) for risk in (policy.conditions.sign_in_risk_levels or [])
+                ]
+                if policy.conditions.sign_in_risk_levels
+                else None,
+            }
+        if include_details and policy.grant_controls:
+            entry["grantControls"] = {
+                "operator": policy.grant_controls.operator,
+                "builtInControls": [
+                    str(control) for control in (policy.grant_controls.built_in_controls or [])
+                ],
+            }
+        policies.append(entry)
+    return {"status": "success", "count": len(policies), "policies": policies}
+
+
+@read_only_tool()
 async def analyze_user_risk_profile(
     user_principal_name: Annotated[str, Field(description="User principal name (email)")],
-    days_back: Annotated[int, Field(description="Days to analyse (default 30, max 90)")] = 30,
+    days_back: DaysBack90 = 30,
 ) -> str:
     """Comprehensive risk profile analysis combining sign-in, risk, and audit data."""
     if not user_principal_name:
@@ -1373,7 +1548,7 @@ async def analyze_user_risk_profile(
             )
 
             qp = RiskyUsersRequestBuilder.RiskyUsersRequestBuilderGetQueryParameters(
-                filter=f"userPrincipalName eq '{user_principal_name}'",
+                filter=f"userPrincipalName eq {quote_odata_string(user_principal_name)}",
             )
             cfg = RiskyUsersRequestBuilder.RiskyUsersRequestBuilderGetRequestConfiguration(
                 query_parameters=qp
@@ -1387,7 +1562,8 @@ async def analyze_user_risk_profile(
             else:
                 lines.append("  OK — User NOT flagged as risky")
         except Exception as ex:
-            lines.append(f"  Could not retrieve risk status: {ex}")
+            logger.warning("Risk status lookup failed: %s", ex)
+            lines.append("  Risk status unavailable")
 
         # Sign-in analysis
         lines.append("\n--- SIGN-IN ACTIVITY ---")
@@ -1397,7 +1573,10 @@ async def analyze_user_risk_profile(
             )
 
             qp2 = SignInsRequestBuilder.SignInsRequestBuilderGetQueryParameters(
-                filter=f"userPrincipalName eq '{user_principal_name}' and createdDateTime ge {start}",
+                filter=(
+                    f"userPrincipalName eq {quote_odata_string(user_principal_name)} "
+                    f"and createdDateTime ge {start}"
+                ),
                 top=500,
                 orderby=["createdDateTime desc"],
             )
@@ -1423,7 +1602,8 @@ async def analyze_user_risk_profile(
             else:
                 lines.append("  No sign-in activity in period")
         except Exception as ex:
-            lines.append(f"  Could not retrieve sign-in logs: {ex}")
+            logger.warning("Sign-in lookup failed: %s", ex)
+            lines.append("  Sign-in activity unavailable")
 
         lines += [
             "\n--- RECOMMENDATIONS ---",
@@ -1435,8 +1615,7 @@ async def analyze_user_risk_profile(
         ]
         return "\n".join(lines)
     except Exception as e:
-        logger.error("Error analysing user risk: %s", e, exc_info=True)
-        return f"Error: {e}"
+        return _error_response("analyze_user_risk_profile", e)
 
 
 # =========================================================================
@@ -1444,22 +1623,52 @@ async def analyze_user_risk_profile(
 # =========================================================================
 
 
-async def _multi_hunt(queries: dict[str, str]) -> dict[str, list]:
-    """Run multiple hunting queries and return keyed results."""
-    out: dict[str, list] = {}
+async def _multi_hunt(queries: dict[str, str]) -> dict[str, dict[str, Any]]:
+    """Run hunting queries and preserve the outcome of each query."""
+    out: dict[str, dict[str, Any]] = {}
     for key, q in queries.items():
         try:
             r = await _run_hunting(q)
-            out[key] = r.get("results", [])
+            results = r.get("results", [])
+            out[key] = {
+                "status": "success",
+                "row_count": r.get("rowCount", len(results)),
+                "results": results,
+            }
         except Exception as e:
             logger.warning("Hunt query '%s' failed: %s", key, e)
-            out[key] = []
+            out[key] = {
+                "status": "error",
+                "row_count": 0,
+                "results": [],
+                "error": "Query execution failed",
+            }
     return out
 
 
-@mcp.tool()
+def _count_hunt_findings(results: dict[str, dict[str, Any]]) -> int:
+    """Return the number of findings from successful hunt queries."""
+    return sum(result["row_count"] for result in results.values() if result["status"] == "success")
+
+
+def _count_hunt_errors(results: dict[str, dict[str, Any]]) -> int:
+    """Return the number of failed hunt queries."""
+    return sum(result["status"] == "error" for result in results.values())
+
+
+def _hunt_response_status(results: dict[str, dict[str, Any]]) -> str:
+    """Summarize the overall outcome of a multi-query hunt."""
+    error_count = _count_hunt_errors(results)
+    if error_count == 0:
+        return "success"
+    if error_count == len(results):
+        return "error"
+    return "partial_success"
+
+
+@read_only_tool()
 async def hunt_ransomware_indicators(
-    days_back: Annotated[int, Field(description="Days back (default 7, max 30)")] = 7,
+    days_back: DaysBack30 = 7,
     detection_type: Annotated[
         str, Field(description="all|extensions|notes|shadow_copy|double_extension")
     ] = "all",
@@ -1496,21 +1705,22 @@ DeviceFileEvents | where Timestamp > ago({d}d) | where ActionType == "FileRename
 | summarize Cnt=count(), Files=make_list(FileName,50) by DeviceName, InitiatingProcessFileName
 | where Cnt > 10 | limit 100"""
     results = await _multi_hunt(queries)
-    total = sum(len(v) for v in results.values())
+    total = _count_hunt_findings(results)
     return _json(
         {
-            "status": "success",
+            "status": _hunt_response_status(results),
             "detection_type": detection_type,
             "days_searched": d,
             "total_findings": total,
+            "failed_queries": _count_hunt_errors(results),
             "results": results,
         }
     )
 
 
-@mcp.tool()
+@read_only_tool()
 async def hunt_suspicious_powershell(
-    days_back: Annotated[int, Field(description="Days back (default 7, max 30)")] = 7,
+    days_back: DaysBack30 = 7,
     detection_type: Annotated[
         str, Field(description="all|encoded|web_requests|defender_tampering|amsi")
     ] = "all",
@@ -1546,21 +1756,22 @@ DeviceEvents | where Timestamp > ago({d}d) | where ActionType == "AmsiScriptDete
 | extend Desc=tostring(parse_json(AdditionalFields).Description)
 | project Timestamp, DeviceName, InitiatingProcessCommandLine, Desc | limit 100"""
     results = await _multi_hunt(queries)
-    total = sum(len(v) for v in results.values())
+    total = _count_hunt_findings(results)
     return _json(
         {
-            "status": "success",
+            "status": _hunt_response_status(results),
             "detection_type": detection_type,
             "days_searched": d,
             "total_findings": total,
+            "failed_queries": _count_hunt_errors(results),
             "results": results,
         }
     )
 
 
-@mcp.tool()
+@read_only_tool()
 async def hunt_lolbin_activity(
-    days_back: Annotated[int, Field(description="Days back (default 7, max 30)")] = 7,
+    days_back: DaysBack30 = 7,
     lolbin_type: Annotated[
         str, Field(description="all|certutil|mshta|regsvr32|rundll32|wmic|bitsadmin")
     ] = "all",
@@ -1601,21 +1812,22 @@ DeviceProcessEvents | where Timestamp > ago({d}d) | where FileName =~ "bitsadmin
 | where ProcessCommandLine has_any ("/transfer","/create","/addfile","http://","https://")
 | project Timestamp, DeviceName, AccountName, ProcessCommandLine | limit 100"""
     results = await _multi_hunt(queries)
-    total = sum(len(v) for v in results.values())
+    total = _count_hunt_findings(results)
     return _json(
         {
-            "status": "success",
+            "status": _hunt_response_status(results),
             "lolbin_type": lolbin_type,
             "days_searched": d,
             "total_findings": total,
+            "failed_queries": _count_hunt_errors(results),
             "results": results,
         }
     )
 
 
-@mcp.tool()
+@read_only_tool()
 async def hunt_lateral_movement(
-    days_back: Annotated[int, Field(description="Days back (default 7, max 30)")] = 7,
+    days_back: DaysBack30 = 7,
     movement_type: Annotated[str, Field(description="all|psexec|smb|wmi|rdp|dcom")] = "all",
 ) -> str:
     """Hunt for lateral movement indicators (PsExec, SMB, WMI, RDP, DCOM)."""
@@ -1649,21 +1861,22 @@ DeviceProcessEvents | where Timestamp > ago({d}d)
 | where FileName in~ ("powershell.exe","cmd.exe","mshta.exe")
 | project Timestamp, DeviceName, AccountName, InitiatingProcessFileName, FileName, ProcessCommandLine | limit 100"""
     results = await _multi_hunt(queries)
-    total = sum(len(v) for v in results.values())
+    total = _count_hunt_findings(results)
     return _json(
         {
-            "status": "success",
+            "status": _hunt_response_status(results),
             "movement_type": movement_type,
             "days_searched": d,
             "total_findings": total,
+            "failed_queries": _count_hunt_errors(results),
             "results": results,
         }
     )
 
 
-@mcp.tool()
+@read_only_tool()
 async def hunt_credential_access(
-    days_back: Annotated[int, Field(description="Days back (default 7, max 30)")] = 7,
+    days_back: DaysBack30 = 7,
     credential_type: Annotated[
         str, Field(description="all|lsass|ntds|sam|mimikatz|dcsync")
     ] = "all",
@@ -1700,21 +1913,22 @@ IdentityDirectoryEvents | where Timestamp > ago({d}d)
 | where ActionType == "Replication request" | where AccountName !endswith "$"
 | project Timestamp, AccountName, DeviceName, DestinationDeviceName | limit 100"""
     results = await _multi_hunt(queries)
-    total = sum(len(v) for v in results.values())
+    total = _count_hunt_findings(results)
     return _json(
         {
-            "status": "success",
+            "status": _hunt_response_status(results),
             "credential_type": credential_type,
             "days_searched": d,
             "total_findings": total,
+            "failed_queries": _count_hunt_errors(results),
             "results": results,
         }
     )
 
 
-@mcp.tool()
+@read_only_tool()
 async def hunt_persistence_mechanisms(
-    days_back: Annotated[int, Field(description="Days back (default 7, max 30)")] = 7,
+    days_back: DaysBack30 = 7,
     persistence_type: Annotated[
         str, Field(description="all|registry|scheduled_tasks|services|startup|wmi")
     ] = "all",
@@ -1748,21 +1962,22 @@ DeviceProcessEvents | where Timestamp > ago({d}d)
 | where ProcessCommandLine has_any ("__EventFilter","__EventConsumer","__FilterToConsumerBinding","ActiveScriptEventConsumer","CommandLineEventConsumer")
 | project Timestamp, DeviceName, AccountName, ProcessCommandLine | limit 100"""
     results = await _multi_hunt(queries)
-    total = sum(len(v) for v in results.values())
+    total = _count_hunt_findings(results)
     return _json(
         {
-            "status": "success",
+            "status": _hunt_response_status(results),
             "persistence_type": persistence_type,
             "days_searched": d,
             "total_findings": total,
+            "failed_queries": _count_hunt_errors(results),
             "results": results,
         }
     )
 
 
-@mcp.tool()
+@read_only_tool()
 async def hunt_suspicious_child_processes(
-    days_back: Annotated[int, Field(description="Days back (default 7, max 30)")] = 7,
+    days_back: DaysBack30 = 7,
     parent_type: Annotated[str, Field(description="all|browser|office|explorer|outlook")] = "all",
 ) -> str:
     """Hunt for suspicious child processes from browsers, Office, explorer, Outlook."""
@@ -1792,21 +2007,22 @@ DeviceProcessEvents | where Timestamp > ago({d}d) | where InitiatingProcessFileN
 | where FileName in~ (S)
 | project Timestamp, DeviceName, AccountName, FileName, ProcessCommandLine | limit 100"""
     results = await _multi_hunt(queries)
-    total = sum(len(v) for v in results.values())
+    total = _count_hunt_findings(results)
     return _json(
         {
-            "status": "success",
+            "status": _hunt_response_status(results),
             "parent_type": parent_type,
             "days_searched": d,
             "total_findings": total,
+            "failed_queries": _count_hunt_errors(results),
             "results": results,
         }
     )
 
 
-@mcp.tool()
+@read_only_tool()
 async def hunt_remote_access_tools(
-    days_back: Annotated[int, Field(description="Days back (default 7, max 30)")] = 7,
+    days_back: DaysBack30 = 7,
     tool_category: Annotated[
         str, Field(description="all|commercial_rmm|known_rats|tunneling")
     ] = "all",
@@ -1832,21 +2048,22 @@ let T=dynamic(['ngrok','plink','putty','chisel','frp','ligolo','socat','netcat',
 DeviceProcessEvents | where Timestamp > ago({d}d) | where FileName has_any (T) or ProcessCommandLine has_any (T)
 | project Timestamp, DeviceName, AccountName, FileName, ProcessCommandLine | limit 100"""
     results = await _multi_hunt(queries)
-    total = sum(len(v) for v in results.values())
+    total = _count_hunt_findings(results)
     return _json(
         {
-            "status": "success",
+            "status": _hunt_response_status(results),
             "tool_category": tool_category,
             "days_searched": d,
             "total_findings": total,
+            "failed_queries": _count_hunt_errors(results),
             "results": results,
         }
     )
 
 
-@mcp.tool()
+@read_only_tool()
 async def hunt_defense_evasion(
-    days_back: Annotated[int, Field(description="Days back (default 7, max 30)")] = 7,
+    days_back: DaysBack30 = 7,
     evasion_type: Annotated[
         str, Field(description="all|security_tools|log_clearing|timestomp|injection")
     ] = "all",
@@ -1877,21 +2094,22 @@ DeviceEvents | where Timestamp > ago({d}d)
 | where ActionType in ("CreateRemoteThreadApiCall","QueueUserApcRemoteApiCall","SetThreadContextRemoteApiCall","NtAllocateVirtualMemoryRemoteApiCall","NtMapViewOfSectionRemoteApiCall")
 | project Timestamp, DeviceName, ActionType, FileName, ProcessCommandLine, InitiatingProcessFileName | limit 100"""
     results = await _multi_hunt(queries)
-    total = sum(len(v) for v in results.values())
+    total = _count_hunt_findings(results)
     return _json(
         {
-            "status": "success",
+            "status": _hunt_response_status(results),
             "evasion_type": evasion_type,
             "days_searched": d,
             "total_findings": total,
+            "failed_queries": _count_hunt_errors(results),
             "results": results,
         }
     )
 
 
-@mcp.tool()
+@read_only_tool()
 async def hunt_threat_intel_feeds(
-    days_back: Annotated[int, Field(description="Days back (default 7, max 30)")] = 7,
+    days_back: DaysBack30 = 7,
     feed_type: Annotated[
         str, Field(description="all|malicious_domains|malicious_ips|malicious_hashes")
     ] = "all",
@@ -1918,70 +2136,46 @@ DeviceFileEvents | where Timestamp > ago({d}d) | join kind=inner Feed on SHA1
 | extend Link=strcat("https://misp.cert.ssi.gouv.fr/feed-misp/",threatid,".json")
 | project Timestamp, SHA1, Link, DeviceName, FileName, FolderPath | limit 100"""
     results = await _multi_hunt(queries)
-    total = sum(len(v) for v in results.values())
+    total = _count_hunt_findings(results)
     return _json(
         {
-            "status": "success",
+            "status": _hunt_response_status(results),
             "feed_type": feed_type,
             "days_searched": d,
             "total_findings": total,
+            "failed_queries": _count_hunt_errors(results),
             "results": results,
         }
     )
 
 
-@mcp.tool()
+@read_only_tool()
 async def hunt_data_exfiltration(
-    days_back: Annotated[int, Field(description="Days back (default 7, max 30)")] = 7,
+    days_back: DaysBack30 = 7,
     exfil_type: Annotated[
         str, Field(description="all|large_transfers|cloud_storage|dns_tunneling|archives")
     ] = "all",
 ) -> str:
     """Hunt for data exfiltration (large transfers, cloud storage, DNS tunnelling, archives)."""
     d = min(days_back, 30)
-    queries: dict[str, str] = {}
-    if exfil_type in ("all", "large_transfers"):
-        queries["large_transfers"] = f"""
-DeviceNetworkEvents | where Timestamp > ago({d}d) | where ActionType == "ConnectionSuccess"
-| where RemoteIPType == "Public"
-| summarize Bytes=sum(SentBytes), Conns=count() by DeviceName, AccountName, RemoteIP
-| where Bytes > 104857600 | order by Bytes desc | limit 100"""
-    if exfil_type in ("all", "cloud_storage"):
-        queries["cloud_storage"] = f"""
-let CS=dynamic(['dropbox.com','drive.google.com','onedrive.live.com','box.com','wetransfer.com','mega.nz','mediafire.com','sendspace.com']);
-DeviceNetworkEvents | where Timestamp > ago({d}d) | where RemoteUrl has_any (CS) | where ActionType == "ConnectionSuccess"
-| summarize Conns=count(), Bytes=sum(SentBytes) by DeviceName, AccountName, RemoteUrl
-| where Bytes > 10485760 | order by Bytes desc | limit 100"""
-    if exfil_type in ("all", "dns_tunneling"):
-        queries["dns_tunneling"] = f"""
-DeviceNetworkEvents | where Timestamp > ago({d}d) | where RemotePort == 53
-| extend QLen=strlen(RemoteUrl) | where QLen > 50
-| summarize Cnt=count(), Avg=avg(QLen), Max=max(QLen) by DeviceName, RemoteIP
-| where Cnt > 100 and Avg > 40 | order by Cnt desc | limit 100"""
-    if exfil_type in ("all", "archives"):
-        queries["archives"] = f"""
-DeviceProcessEvents | where Timestamp > ago({d}d)
-| where FileName in~ ("7z.exe","rar.exe","zip.exe","tar.exe","winrar.exe","winzip.exe")
-    or ProcessCommandLine has_any ("Compress-Archive","System.IO.Compression")
-| where ProcessCommandLine has_any ("-p","-password","SecureString","ConvertTo-SecureString")
-    or InitiatingProcessFileName in~ ("powershell.exe","cmd.exe")
-| project Timestamp, DeviceName, AccountName, FileName, ProcessCommandLine | limit 100"""
+    queries = _build_data_exfiltration_queries(d, exfil_type)
     results = await _multi_hunt(queries)
-    total = sum(len(v) for v in results.values())
+    total = _count_hunt_findings(results)
     return _json(
         {
-            "status": "success",
+            "status": _hunt_response_status(results),
             "exfil_type": exfil_type,
             "days_searched": d,
             "total_findings": total,
+            "failed_queries": _count_hunt_errors(results),
             "results": results,
         }
     )
 
 
-@mcp.tool()
+@read_only_tool()
 async def get_asr_events(
-    days_back: Annotated[int, Field(description="Days back (default 7, max 30)")] = 7,
+    days_back: DaysBack30 = 7,
     event_type: Annotated[str, Field(description="all|blocked|audited")] = "all",
 ) -> str:
     """Retrieve Attack Surface Reduction (ASR) rule events."""
@@ -2016,5 +2210,247 @@ DeviceEvents | where Timestamp > ago({d}d) | where ActionType startswith "Asr" {
             }
         )
     except Exception as e:
-        logger.error("Error getting ASR events: %s", e, exc_info=True)
-        return _json({"status": "error", "error": str(e)})
+        return _error_response("get_asr_events", e)
+
+
+# =========================================================================
+# WORKFLOW TOOLS — Token-efficient orchestration
+# =========================================================================
+
+
+def _workflow_evidence_limit(detail_level: DetailLevel, max_evidence: int) -> int:
+    if detail_level == "summary":
+        return min(max_evidence, 3)
+    if detail_level == "standard":
+        return min(max_evidence, 10)
+    return max_evidence
+
+
+@read_only_tool()
+async def investigate_user(
+    user_principal_name: Annotated[str, Field(min_length=3, max_length=320)],
+    days_back: DaysBack90 = 30,
+    detail_level: DetailLevel = "standard",
+    max_evidence: MaxEvidence = 10,
+) -> dict[str, Any]:
+    """Investigate one user's sign-ins, risky sign-ins, and directory audit activity."""
+    evidence_limit = _workflow_evidence_limit(detail_level, max_evidence)
+    result = await run_workflow(
+        {
+            "sign_ins": lambda: get_signin_logs(
+                user_principal_name=user_principal_name,
+                days_back=min(days_back, 30),
+                top=min(max_evidence, 500),
+            ),
+            "risky_sign_ins": lambda: get_risky_signins(
+                user_principal_name=user_principal_name,
+                days_back=min(days_back, 30),
+                top=min(max_evidence, 500),
+            ),
+            "audit_activity": lambda: get_audit_logs(
+                initiated_by=user_principal_name,
+                days_back=min(days_back, 30),
+                top=min(max_evidence, 500),
+            ),
+        },
+        max_concurrency=3,
+        max_items=evidence_limit,
+    )
+    return {
+        "contract_version": "1.0.0",
+        "workflow": "investigate_user",
+        "subject": user_principal_name,
+        "days_back": days_back,
+        "detail_level": detail_level,
+        **result,
+    }
+
+
+@read_only_tool()
+async def investigate_alert(
+    alert_id: Annotated[str, Field(min_length=1, max_length=256)],
+    time_range: Literal["1h", "24h", "7d", "30d"] = "24h",
+    detail_level: DetailLevel = "standard",
+    max_evidence: MaxEvidence = 10,
+) -> dict[str, Any]:
+    """Investigate an alert and provide bounded environment alert context."""
+    result = await run_workflow(
+        {
+            "alert": lambda: get_alert_details(alert_id),
+            "alert_context": lambda: get_alert_statistics(time_range),
+        },
+        max_concurrency=2,
+        max_items=_workflow_evidence_limit(detail_level, max_evidence),
+    )
+    return {
+        "contract_version": "1.0.0",
+        "workflow": "investigate_alert",
+        "alert_id": alert_id,
+        "detail_level": detail_level,
+        **result,
+    }
+
+
+@read_only_tool()
+async def hunt_iocs_batch(
+    iocs: BatchIoCs,
+    ioc_type: Literal["ip", "domain", "url", "hash"],
+    detail_level: DetailLevel = "summary",
+    max_evidence: MaxEvidence = 5,
+    max_concurrency: WorkflowConcurrency = 4,
+) -> dict[str, Any]:
+    """Enrich up to 20 IoCs in one bounded, deduplicated workflow call."""
+    unique_iocs = list(dict.fromkeys(iocs))
+    result = await run_workflow(
+        {
+            f"ioc_{index}": lambda value=value: enrich_ioc(value, ioc_type)
+            for index, value in enumerate(unique_iocs)
+        },
+        max_concurrency=max_concurrency,
+        max_items=_workflow_evidence_limit(detail_level, max_evidence),
+    )
+    return {
+        "contract_version": "1.0.0",
+        "workflow": "hunt_iocs_batch",
+        "ioc_type": ioc_type,
+        "requested_count": len(iocs),
+        "unique_count": len(unique_iocs),
+        "detail_level": detail_level,
+        **result,
+    }
+
+
+@read_only_tool()
+async def run_threat_hunt_suite(
+    modules: Annotated[list[ThreatModule], Field(min_length=1, max_length=12)],
+    days_back: DaysBack30 = 7,
+    detail_level: DetailLevel = "summary",
+    max_evidence: MaxEvidence = 5,
+    max_concurrency: WorkflowConcurrency = 3,
+) -> dict[str, Any]:
+    """Run selected threat-hunting modules with bounded concurrency and explicit failures."""
+    authorize_current_identity(agent_role="Mcp.Hunt")
+    module_loaders = {
+        "ransomware": lambda: hunt_ransomware_indicators(days_back),
+        "powershell": lambda: hunt_suspicious_powershell(days_back),
+        "lolbins": lambda: hunt_lolbin_activity(days_back),
+        "lateral_movement": lambda: hunt_lateral_movement(days_back),
+        "credential_access": lambda: hunt_credential_access(days_back),
+        "persistence": lambda: hunt_persistence_mechanisms(days_back),
+        "child_processes": lambda: hunt_suspicious_child_processes(days_back),
+        "remote_access": lambda: hunt_remote_access_tools(days_back),
+        "defense_evasion": lambda: hunt_defense_evasion(days_back),
+        "threat_intel": lambda: hunt_threat_intel_feeds(days_back),
+        "data_exfiltration": lambda: hunt_data_exfiltration(days_back),
+        "asr": lambda: get_asr_events(days_back),
+    }
+    selected_modules = list(dict.fromkeys(modules))
+    result = await run_workflow(
+        {module: module_loaders[module] for module in selected_modules},
+        max_concurrency=max_concurrency,
+        max_items=_workflow_evidence_limit(detail_level, max_evidence),
+    )
+    return {
+        "contract_version": "1.0.0",
+        "workflow": "run_threat_hunt_suite",
+        "modules": selected_modules,
+        "days_back": days_back,
+        "detail_level": detail_level,
+        **result,
+    }
+
+
+# =========================================================================
+# AGENT GOVERNANCE — Microsoft Graph beta (read-only, feature flagged)
+# =========================================================================
+
+
+async def _agent_governance_client() -> AgentGovernanceClient:
+    authorize_current_identity(agent_role="Mcp.AgentGovernance")
+    return AgentGovernanceClient(
+        _get_graph_access_token,
+        enabled=AgentGovernanceClient.enabled_from_environment(),
+    )
+
+
+@read_only_tool()
+async def list_agent_identities(
+    top: ResultLimit100 = 50,
+) -> dict[str, Any]:
+    """List Microsoft Entra Agent Identities using a feature-flagged Graph beta adapter."""
+    client = await _agent_governance_client()
+    try:
+        agents = await client.list_agent_identities(top)
+        return {
+            "status": "success",
+            "contract_version": "1.0.0-beta.1",
+            "capability_status": "beta",
+            "count": len(agents),
+            "agents": agents,
+        }
+    except AgentGovernanceUnavailable:
+        return {
+            "status": "unavailable",
+            "contract_version": "1.0.0-beta.1",
+            "capability_status": "beta",
+            "error": "Agent governance beta is unavailable",
+        }
+    finally:
+        await client.close()
+
+
+@read_only_tool()
+async def get_agent_identity_profile(
+    agent_id: Annotated[str, Field(min_length=1, max_length=256)],
+    max_assignments: ResultLimit100 = 50,
+) -> dict[str, Any]:
+    """Get one Agent Identity and its bounded application-role assignments."""
+    client = await _agent_governance_client()
+    try:
+        profile, assignments = await asyncio.gather(
+            client.get_agent_identity(agent_id),
+            client.list_agent_app_roles(agent_id),
+        )
+        return {
+            "status": "success",
+            "contract_version": "1.0.0-beta.1",
+            "capability_status": "beta",
+            "agent": profile,
+            "permission_analysis": analyze_permission_assignments(assignments[:max_assignments]),
+        }
+    except AgentGovernanceUnavailable:
+        return {
+            "status": "unavailable",
+            "contract_version": "1.0.0-beta.1",
+            "capability_status": "beta",
+            "error": "Agent governance beta is unavailable",
+        }
+    finally:
+        await client.close()
+
+
+@read_only_tool()
+async def analyze_agent_permissions(
+    agent_id: Annotated[str, Field(min_length=1, max_length=256)],
+    max_assignments: ResultLimit100 = 100,
+) -> dict[str, Any]:
+    """Analyze one Agent Identity's application-role assignments using explainable heuristics."""
+    client = await _agent_governance_client()
+    try:
+        assignments = await client.list_agent_app_roles(agent_id)
+        return {
+            "status": "success",
+            "contract_version": "1.0.0-beta.1",
+            "capability_status": "beta",
+            "agent_id": agent_id,
+            **analyze_permission_assignments(assignments[:max_assignments]),
+        }
+    except AgentGovernanceUnavailable:
+        return {
+            "status": "unavailable",
+            "contract_version": "1.0.0-beta.1",
+            "capability_status": "beta",
+            "error": "Agent governance beta is unavailable",
+        }
+    finally:
+        await client.close()

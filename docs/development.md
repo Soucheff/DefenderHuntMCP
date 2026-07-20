@@ -52,16 +52,16 @@ uv run python -m py_compile config.py server.py server_http.py
 uv run pytest
 ```
 
-The repository currently configures pytest but has no committed automated test suite. Protocol and Microsoft Graph behavior should gain focused unit tests before feature expansion.
+The repository includes unit and contract tests for query safety, schemas, partial failures, Entra JWT classification, auth middleware/policies, OBO/Managed Identity routing, Redis/cache isolation, workflows, and beta governance adapters.
 
 ## MCP smoke test
 
-Start the server with an API key, then send an initialize request:
+Acquire a delegated or application access token for the configured MCP audience, then send an initialize request:
 
 ```bash
 curl --fail --silent \
   -X POST http://localhost:8000/mcp \
-  -H 'X-API-Key: replace-with-your-key' \
+  -H 'Authorization: Bearer <entra-access-token-for-mcp>' \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   --data '{
@@ -82,9 +82,16 @@ This verifies the MCP transport and authentication only. Tool calls require vali
 
 | Path | Purpose |
 |---|---|
-| `server.py` | FastMCP resources, tools, Graph client, and KQL queries. |
-| `server_http.py` | Starlette/Uvicorn gateway, API-key middleware, CORS, health and information routes. |
+| `server.py` | FastMCP resources, atomic tools, workflows, governance tools, and KQL queries. |
+| `server_http.py` | Starlette/Uvicorn gateway, Entra middleware, CORS, health and information routes. |
 | `config.py` | Environment loading and required-variable validation. |
+| `query_safety.py` | Central validation and quoting for caller-provided KQL/OData literals. |
+| `entra_auth.py`, `auth_context.py`, `auth_policy.py` | JWT validation, request identity, and per-capability authorization. |
+| `graph_clients.py` | Delegated OBO and autonomous Managed Identity Graph routing. |
+| `cache_backend.py`, `cache_runtime.py` | Redis/in-memory backends, identity-isolated keys, cache-aside, and Azure Managed Redis credentials. |
+| `workflow_engine.py` | Bounded concurrent orchestration and compact result normalization. |
+| `agent_governance.py` | Feature-flagged Microsoft Graph beta adapter and permission analysis. |
+| `infra/main.bicep` | Managed Identity, ACR, Container Apps, Azure Managed Redis, and role-assignment infrastructure. |
 | `pyproject.toml` | Project metadata, dependencies, pytest and Ruff configuration. |
 | `uv.lock` | Reproducible dependency lockfile. |
 | `Dockerfile` | Multi-stage, non-root production image. |

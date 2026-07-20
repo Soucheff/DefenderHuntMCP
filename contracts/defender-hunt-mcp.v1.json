@@ -1,0 +1,1930 @@
+{
+  "resources": [
+    {
+      "description": "Versioned runtime capability and integration metadata.",
+      "mime_type": "text/plain",
+      "name": "resource_capabilities",
+      "uri": "defender://capabilities"
+    },
+    {
+      "description": "Collection of example KQL queries for Advanced Hunting.",
+      "mime_type": "text/plain",
+      "name": "resource_example_queries",
+      "uri": "defender://hunting/examples"
+    },
+    {
+      "description": "KQL queries for hunting based on IoCs (IP, domain, hash, URL).",
+      "mime_type": "text/plain",
+      "name": "resource_ioc_queries",
+      "uri": "defender://hunting/ioc-queries"
+    },
+    {
+      "description": "List of available Advanced Hunting tables.",
+      "mime_type": "text/plain",
+      "name": "resource_hunting_tables",
+      "uri": "defender://hunting/tables"
+    },
+    {
+      "description": "Incident response playbooks and investigation workflows.",
+      "mime_type": "text/plain",
+      "name": "resource_soc_playbooks",
+      "uri": "defender://soc/playbooks"
+    },
+    {
+      "description": "Reference for Conditional Access policies.",
+      "mime_type": "text/plain",
+      "name": "resource_conditional_access",
+      "uri": "entra://identity/conditional-access"
+    },
+    {
+      "description": "Guide for investigating risky users and sign-ins.",
+      "mime_type": "text/plain",
+      "name": "resource_risk_investigation",
+      "uri": "entra://identity/risk-investigation"
+    },
+    {
+      "description": "Guide for investigating user sign-in activity.",
+      "mime_type": "text/plain",
+      "name": "resource_signin_investigation",
+      "uri": "entra://identity/signin-investigation"
+    }
+  ],
+  "schema_version": "1.0.0",
+  "server": "defender_hunt_mcp",
+  "server_version": "3.0.0",
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Analyze one Agent Identity's application-role assignments using explainable heuristics.",
+      "input_schema": {
+        "properties": {
+          "agent_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "max_assignments": {
+            "default": 100,
+            "description": "Maximum results (1-100)",
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Max Assignments",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_id"
+        ],
+        "title": "analyze_agent_permissionsArguments",
+        "type": "object"
+      },
+      "name": "analyze_agent_permissions",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "analyze_agent_permissionsDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Analyse overall security posture with actionable insights.",
+      "input_schema": {
+        "properties": {
+          "focus_area": {
+            "default": "all",
+            "description": "Focus: all|identity|devices|network|applications",
+            "title": "Focus Area",
+            "type": "string"
+          }
+        },
+        "title": "analyze_security_postureArguments",
+        "type": "object"
+      },
+      "name": "analyze_security_posture",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "analyze_security_postureOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Comprehensive risk profile analysis combining sign-in, risk, and audit data.",
+      "input_schema": {
+        "properties": {
+          "days_back": {
+            "default": 30,
+            "description": "Days back (1-90)",
+            "maximum": 90,
+            "minimum": 1,
+            "title": "Days Back",
+            "type": "integer"
+          },
+          "user_principal_name": {
+            "description": "User principal name (email)",
+            "title": "User Principal Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_principal_name"
+        ],
+        "title": "analyze_user_risk_profileArguments",
+        "type": "object"
+      },
+      "name": "analyze_user_risk_profile",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "analyze_user_risk_profileOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Enrich an Indicator of Compromise with threat intelligence from Defender data.",
+      "input_schema": {
+        "properties": {
+          "ioc_type": {
+            "description": "Type: ip|domain|url|hash",
+            "title": "Ioc Type",
+            "type": "string"
+          },
+          "ioc_value": {
+            "description": "The IoC value (IP, domain, URL, or file hash)",
+            "title": "Ioc Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ioc_value",
+          "ioc_type"
+        ],
+        "title": "enrich_iocArguments",
+        "type": "object"
+      },
+      "name": "enrich_ioc",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "enrich_iocOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Get one Agent Identity and its bounded application-role assignments.",
+      "input_schema": {
+        "properties": {
+          "agent_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "max_assignments": {
+            "default": 50,
+            "description": "Maximum results (1-100)",
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Max Assignments",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_id"
+        ],
+        "title": "get_agent_identity_profileArguments",
+        "type": "object"
+      },
+      "name": "get_agent_identity_profile",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "get_agent_identity_profileDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Get detailed information about a specific security alert.",
+      "input_schema": {
+        "properties": {
+          "alert_id": {
+            "description": "Unique alert identifier",
+            "title": "Alert Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "alert_id"
+        ],
+        "title": "get_alert_detailsArguments",
+        "type": "object"
+      },
+      "name": "get_alert_details",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "get_alert_detailsOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Get statistical summary of security alerts.",
+      "input_schema": {
+        "properties": {
+          "time_range": {
+            "default": "24h",
+            "description": "Time range: 1h|24h|7d|30d",
+            "title": "Time Range",
+            "type": "string"
+          }
+        },
+        "title": "get_alert_statisticsArguments",
+        "type": "object"
+      },
+      "name": "get_alert_statistics",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "get_alert_statisticsOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Retrieve Attack Surface Reduction (ASR) rule events.",
+      "input_schema": {
+        "properties": {
+          "days_back": {
+            "default": 7,
+            "description": "Days back (1-30)",
+            "maximum": 30,
+            "minimum": 1,
+            "title": "Days Back",
+            "type": "integer"
+          },
+          "event_type": {
+            "default": "all",
+            "description": "all|blocked|audited",
+            "title": "Event Type",
+            "type": "string"
+          }
+        },
+        "title": "get_asr_eventsArguments",
+        "type": "object"
+      },
+      "name": "get_asr_events",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "get_asr_eventsOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Retrieve Microsoft Entra ID audit logs.",
+      "input_schema": {
+        "properties": {
+          "activity_display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Filter by activity name",
+            "title": "Activity Display Name"
+          },
+          "category": {
+            "default": "all",
+            "description": "UserManagement|GroupManagement|ApplicationManagement|RoleManagement|DirectoryManagement|Policy|all",
+            "title": "Category",
+            "type": "string"
+          },
+          "days_back": {
+            "default": 7,
+            "description": "Days back (1-30)",
+            "maximum": 30,
+            "minimum": 1,
+            "title": "Days Back",
+            "type": "integer"
+          },
+          "initiated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Filter by initiator",
+            "title": "Initiated By"
+          },
+          "target_resource": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Filter by target resource name",
+            "title": "Target Resource"
+          },
+          "top": {
+            "default": 100,
+            "description": "Maximum results (1-500)",
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          }
+        },
+        "title": "get_audit_logsArguments",
+        "type": "object"
+      },
+      "name": "get_audit_logs",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "get_audit_logsOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Retrieve Conditional Access policies and their configurations.",
+      "input_schema": {
+        "properties": {
+          "include_details": {
+            "default": true,
+            "description": "Include full policy details",
+            "title": "Include Details",
+            "type": "boolean"
+          },
+          "state": {
+            "default": "all",
+            "description": "enabled|disabled|enabledForReportingButNotEnforced|all",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "title": "get_conditional_access_policiesArguments",
+        "type": "object"
+      },
+      "name": "get_conditional_access_policies",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "get_conditional_access_policiesOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Get detailed information about a device/machine.",
+      "input_schema": {
+        "properties": {
+          "device_name": {
+            "description": "Name or ID of the device",
+            "title": "Device Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_name"
+        ],
+        "title": "get_device_infoArguments",
+        "type": "object"
+      },
+      "name": "get_device_info",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "get_device_infoOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Get comprehensive security dashboard overview of the environment.",
+      "input_schema": {
+        "properties": {
+          "time_range": {
+            "default": "24h",
+            "description": "Time range: 1h|24h|7d|30d",
+            "title": "Time Range",
+            "type": "string"
+          }
+        },
+        "title": "get_environment_dashboardArguments",
+        "type": "object"
+      },
+      "name": "get_environment_dashboard",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "get_environment_dashboardOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Retrieve risky sign-in events from Entra ID Identity Protection.",
+      "input_schema": {
+        "properties": {
+          "days_back": {
+            "default": 7,
+            "description": "Days back (1-30)",
+            "maximum": 30,
+            "minimum": 1,
+            "title": "Days Back",
+            "type": "integer"
+          },
+          "risk_level": {
+            "default": "all",
+            "description": "Risk level filter",
+            "enum": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "all"
+            ],
+            "title": "Risk Level",
+            "type": "string"
+          },
+          "risk_state": {
+            "default": "all",
+            "description": "Risk state filter",
+            "enum": [
+              "atRisk",
+              "confirmedCompromised",
+              "remediated",
+              "dismissed",
+              "all"
+            ],
+            "title": "Risk State",
+            "type": "string"
+          },
+          "top": {
+            "default": 100,
+            "description": "Maximum results (1-500)",
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          },
+          "user_principal_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Filter by UPN",
+            "title": "User Principal Name"
+          }
+        },
+        "title": "get_risky_signinsArguments",
+        "type": "object"
+      },
+      "name": "get_risky_signins",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "get_risky_signinsOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Retrieve users flagged as risky by Entra ID Identity Protection.",
+      "input_schema": {
+        "properties": {
+          "risk_level": {
+            "default": "all",
+            "description": "Risk level filter",
+            "enum": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "all"
+            ],
+            "title": "Risk Level",
+            "type": "string"
+          },
+          "risk_state": {
+            "default": "atRisk",
+            "description": "Risk state filter",
+            "enum": [
+              "atRisk",
+              "confirmedCompromised",
+              "remediated",
+              "dismissed",
+              "all"
+            ],
+            "title": "Risk State",
+            "type": "string"
+          },
+          "top": {
+            "default": 50,
+            "description": "Maximum results (1-200)",
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          }
+        },
+        "title": "get_risky_usersArguments",
+        "type": "object"
+      },
+      "name": "get_risky_users",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "get_risky_usersOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Retrieve security alerts from Microsoft Defender.",
+      "input_schema": {
+        "properties": {
+          "severity": {
+            "anyOf": [
+              {
+                "enum": [
+                  "informational",
+                  "low",
+                  "medium",
+                  "high",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Alert severity filter",
+            "title": "Severity"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "new",
+                  "inProgress",
+                  "resolved",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Alert status filter",
+            "title": "Status"
+          },
+          "top": {
+            "default": 50,
+            "description": "Maximum results (1-100)",
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          }
+        },
+        "title": "get_security_alertsArguments",
+        "type": "object"
+      },
+      "name": "get_security_alerts",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "get_security_alertsOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Retrieve security recommendations from Microsoft Defender.",
+      "input_schema": {
+        "properties": {
+          "recommendation_category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Category: application|identity|data|device|network",
+            "title": "Recommendation Category"
+          },
+          "top": {
+            "default": 50,
+            "description": "Maximum results (1-100)",
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          }
+        },
+        "title": "get_security_recommendationsArguments",
+        "type": "object"
+      },
+      "name": "get_security_recommendations",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "get_security_recommendationsOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Retrieve Microsoft Entra ID sign-in logs.",
+      "input_schema": {
+        "properties": {
+          "app_display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Filter by application name",
+            "title": "App Display Name"
+          },
+          "days_back": {
+            "default": 7,
+            "description": "Days back (1-30)",
+            "maximum": 30,
+            "minimum": 1,
+            "title": "Days Back",
+            "type": "integer"
+          },
+          "risk_level": {
+            "default": "all",
+            "description": "Risk level filter",
+            "enum": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "all"
+            ],
+            "title": "Risk Level",
+            "type": "string"
+          },
+          "status": {
+            "default": "all",
+            "description": "Sign-in result filter",
+            "enum": [
+              "success",
+              "failure",
+              "all"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "top": {
+            "default": 100,
+            "description": "Maximum results (1-500)",
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          },
+          "user_principal_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Filter by UPN (partial match)",
+            "title": "User Principal Name"
+          }
+        },
+        "title": "get_signin_logsArguments",
+        "type": "object"
+      },
+      "name": "get_signin_logs",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "get_signin_logsOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Retrieve Threat Intelligence Indicators (IoCs) from Microsoft Defender.",
+      "input_schema": {
+        "properties": {
+          "top": {
+            "default": 50,
+            "description": "Maximum results (1-100)",
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          }
+        },
+        "title": "get_threat_indicatorsArguments",
+        "type": "object"
+      },
+      "name": "get_threat_indicators",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "get_threat_indicatorsOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Automatically hunt for an IoC across all relevant Defender tables.",
+      "input_schema": {
+        "properties": {
+          "days_back": {
+            "default": 30,
+            "description": "Days back (1-30)",
+            "maximum": 30,
+            "minimum": 1,
+            "title": "Days Back",
+            "type": "integer"
+          },
+          "ioc_type": {
+            "description": "Type: ip|domain|url|hash|process",
+            "title": "Ioc Type",
+            "type": "string"
+          },
+          "ioc_value": {
+            "description": "The IoC to hunt (IP, domain, URL, or hash)",
+            "title": "Ioc Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ioc_value",
+          "ioc_type"
+        ],
+        "title": "hunt_by_iocArguments",
+        "type": "object"
+      },
+      "name": "hunt_by_ioc",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "hunt_by_iocOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Hunt for credential access/dumping (LSASS, NTDS, SAM, mimikatz, DCSync).",
+      "input_schema": {
+        "properties": {
+          "credential_type": {
+            "default": "all",
+            "description": "all|lsass|ntds|sam|mimikatz|dcsync",
+            "title": "Credential Type",
+            "type": "string"
+          },
+          "days_back": {
+            "default": 7,
+            "description": "Days back (1-30)",
+            "maximum": 30,
+            "minimum": 1,
+            "title": "Days Back",
+            "type": "integer"
+          }
+        },
+        "title": "hunt_credential_accessArguments",
+        "type": "object"
+      },
+      "name": "hunt_credential_access",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "hunt_credential_accessOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Hunt for data exfiltration (large transfers, cloud storage, DNS tunnelling, archives).",
+      "input_schema": {
+        "properties": {
+          "days_back": {
+            "default": 7,
+            "description": "Days back (1-30)",
+            "maximum": 30,
+            "minimum": 1,
+            "title": "Days Back",
+            "type": "integer"
+          },
+          "exfil_type": {
+            "default": "all",
+            "description": "all|large_transfers|cloud_storage|dns_tunneling|archives",
+            "title": "Exfil Type",
+            "type": "string"
+          }
+        },
+        "title": "hunt_data_exfiltrationArguments",
+        "type": "object"
+      },
+      "name": "hunt_data_exfiltration",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "hunt_data_exfiltrationOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Hunt for defense evasion (security tool tampering, log clearing, timestomping, injection).",
+      "input_schema": {
+        "properties": {
+          "days_back": {
+            "default": 7,
+            "description": "Days back (1-30)",
+            "maximum": 30,
+            "minimum": 1,
+            "title": "Days Back",
+            "type": "integer"
+          },
+          "evasion_type": {
+            "default": "all",
+            "description": "all|security_tools|log_clearing|timestomp|injection",
+            "title": "Evasion Type",
+            "type": "string"
+          }
+        },
+        "title": "hunt_defense_evasionArguments",
+        "type": "object"
+      },
+      "name": "hunt_defense_evasion",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "hunt_defense_evasionOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Enrich up to 20 IoCs in one bounded, deduplicated workflow call.",
+      "input_schema": {
+        "properties": {
+          "detail_level": {
+            "default": "summary",
+            "enum": [
+              "summary",
+              "standard",
+              "evidence"
+            ],
+            "title": "Detail Level",
+            "type": "string"
+          },
+          "ioc_type": {
+            "enum": [
+              "ip",
+              "domain",
+              "url",
+              "hash"
+            ],
+            "title": "Ioc Type",
+            "type": "string"
+          },
+          "iocs": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Iocs",
+            "type": "array"
+          },
+          "max_concurrency": {
+            "default": 4,
+            "description": "Concurrent steps (1-8)",
+            "maximum": 8,
+            "minimum": 1,
+            "title": "Max Concurrency",
+            "type": "integer"
+          },
+          "max_evidence": {
+            "default": 5,
+            "description": "Maximum evidence items (1-50)",
+            "maximum": 50,
+            "minimum": 1,
+            "title": "Max Evidence",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "iocs",
+          "ioc_type"
+        ],
+        "title": "hunt_iocs_batchArguments",
+        "type": "object"
+      },
+      "name": "hunt_iocs_batch",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "hunt_iocs_batchDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Hunt for lateral movement indicators (PsExec, SMB, WMI, RDP, DCOM).",
+      "input_schema": {
+        "properties": {
+          "days_back": {
+            "default": 7,
+            "description": "Days back (1-30)",
+            "maximum": 30,
+            "minimum": 1,
+            "title": "Days Back",
+            "type": "integer"
+          },
+          "movement_type": {
+            "default": "all",
+            "description": "all|psexec|smb|wmi|rdp|dcom",
+            "title": "Movement Type",
+            "type": "string"
+          }
+        },
+        "title": "hunt_lateral_movementArguments",
+        "type": "object"
+      },
+      "name": "hunt_lateral_movement",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "hunt_lateral_movementOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Hunt for Living Off The Land Binary (LOLBIN) abuse.",
+      "input_schema": {
+        "properties": {
+          "days_back": {
+            "default": 7,
+            "description": "Days back (1-30)",
+            "maximum": 30,
+            "minimum": 1,
+            "title": "Days Back",
+            "type": "integer"
+          },
+          "lolbin_type": {
+            "default": "all",
+            "description": "all|certutil|mshta|regsvr32|rundll32|wmic|bitsadmin",
+            "title": "Lolbin Type",
+            "type": "string"
+          }
+        },
+        "title": "hunt_lolbin_activityArguments",
+        "type": "object"
+      },
+      "name": "hunt_lolbin_activity",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "hunt_lolbin_activityOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Hunt for persistence mechanisms (registry, tasks, services, startup, WMI).",
+      "input_schema": {
+        "properties": {
+          "days_back": {
+            "default": 7,
+            "description": "Days back (1-30)",
+            "maximum": 30,
+            "minimum": 1,
+            "title": "Days Back",
+            "type": "integer"
+          },
+          "persistence_type": {
+            "default": "all",
+            "description": "all|registry|scheduled_tasks|services|startup|wmi",
+            "title": "Persistence Type",
+            "type": "string"
+          }
+        },
+        "title": "hunt_persistence_mechanismsArguments",
+        "type": "object"
+      },
+      "name": "hunt_persistence_mechanisms",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "hunt_persistence_mechanismsOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Hunt for ransomware indicators including file extensions, ransom notes, shadow copy deletion.",
+      "input_schema": {
+        "properties": {
+          "days_back": {
+            "default": 7,
+            "description": "Days back (1-30)",
+            "maximum": 30,
+            "minimum": 1,
+            "title": "Days Back",
+            "type": "integer"
+          },
+          "detection_type": {
+            "default": "all",
+            "description": "all|extensions|notes|shadow_copy|double_extension",
+            "title": "Detection Type",
+            "type": "string"
+          }
+        },
+        "title": "hunt_ransomware_indicatorsArguments",
+        "type": "object"
+      },
+      "name": "hunt_ransomware_indicators",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "hunt_ransomware_indicatorsOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Hunt for RATs and RMM tools (TeamViewer, AnyDesk, ConnectWise, known RATs, tunnelling).",
+      "input_schema": {
+        "properties": {
+          "days_back": {
+            "default": 7,
+            "description": "Days back (1-30)",
+            "maximum": 30,
+            "minimum": 1,
+            "title": "Days Back",
+            "type": "integer"
+          },
+          "tool_category": {
+            "default": "all",
+            "description": "all|commercial_rmm|known_rats|tunneling",
+            "title": "Tool Category",
+            "type": "string"
+          }
+        },
+        "title": "hunt_remote_access_toolsArguments",
+        "type": "object"
+      },
+      "name": "hunt_remote_access_tools",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "hunt_remote_access_toolsOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Hunt for suspicious child processes from browsers, Office, explorer, Outlook.",
+      "input_schema": {
+        "properties": {
+          "days_back": {
+            "default": 7,
+            "description": "Days back (1-30)",
+            "maximum": 30,
+            "minimum": 1,
+            "title": "Days Back",
+            "type": "integer"
+          },
+          "parent_type": {
+            "default": "all",
+            "description": "all|browser|office|explorer|outlook",
+            "title": "Parent Type",
+            "type": "string"
+          }
+        },
+        "title": "hunt_suspicious_child_processesArguments",
+        "type": "object"
+      },
+      "name": "hunt_suspicious_child_processes",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "hunt_suspicious_child_processesOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Hunt for suspicious PowerShell: encoded commands, web requests, Defender tampering, AMSI.",
+      "input_schema": {
+        "properties": {
+          "days_back": {
+            "default": 7,
+            "description": "Days back (1-30)",
+            "maximum": 30,
+            "minimum": 1,
+            "title": "Days Back",
+            "type": "integer"
+          },
+          "detection_type": {
+            "default": "all",
+            "description": "all|encoded|web_requests|defender_tampering|amsi",
+            "title": "Detection Type",
+            "type": "string"
+          }
+        },
+        "title": "hunt_suspicious_powershellArguments",
+        "type": "object"
+      },
+      "name": "hunt_suspicious_powershell",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "hunt_suspicious_powershellOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Hunt for indicators from public threat intelligence feeds.",
+      "input_schema": {
+        "properties": {
+          "days_back": {
+            "default": 7,
+            "description": "Days back (1-30)",
+            "maximum": 30,
+            "minimum": 1,
+            "title": "Days Back",
+            "type": "integer"
+          },
+          "feed_type": {
+            "default": "all",
+            "description": "all|malicious_domains|malicious_ips|malicious_hashes",
+            "title": "Feed Type",
+            "type": "string"
+          }
+        },
+        "title": "hunt_threat_intel_feedsArguments",
+        "type": "object"
+      },
+      "name": "hunt_threat_intel_feeds",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "hunt_threat_intel_feedsOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Investigate an alert and provide bounded environment alert context.",
+      "input_schema": {
+        "properties": {
+          "alert_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Alert Id",
+            "type": "string"
+          },
+          "detail_level": {
+            "default": "standard",
+            "enum": [
+              "summary",
+              "standard",
+              "evidence"
+            ],
+            "title": "Detail Level",
+            "type": "string"
+          },
+          "max_evidence": {
+            "default": 10,
+            "description": "Maximum evidence items (1-50)",
+            "maximum": 50,
+            "minimum": 1,
+            "title": "Max Evidence",
+            "type": "integer"
+          },
+          "time_range": {
+            "default": "24h",
+            "enum": [
+              "1h",
+              "24h",
+              "7d",
+              "30d"
+            ],
+            "title": "Time Range",
+            "type": "string"
+          }
+        },
+        "required": [
+          "alert_id"
+        ],
+        "title": "investigate_alertArguments",
+        "type": "object"
+      },
+      "name": "investigate_alert",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "investigate_alertDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Investigate one user's sign-ins, risky sign-ins, and directory audit activity.",
+      "input_schema": {
+        "properties": {
+          "days_back": {
+            "default": 30,
+            "description": "Days back (1-90)",
+            "maximum": 90,
+            "minimum": 1,
+            "title": "Days Back",
+            "type": "integer"
+          },
+          "detail_level": {
+            "default": "standard",
+            "enum": [
+              "summary",
+              "standard",
+              "evidence"
+            ],
+            "title": "Detail Level",
+            "type": "string"
+          },
+          "max_evidence": {
+            "default": 10,
+            "description": "Maximum evidence items (1-50)",
+            "maximum": 50,
+            "minimum": 1,
+            "title": "Max Evidence",
+            "type": "integer"
+          },
+          "user_principal_name": {
+            "maxLength": 320,
+            "minLength": 3,
+            "title": "User Principal Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_principal_name"
+        ],
+        "title": "investigate_userArguments",
+        "type": "object"
+      },
+      "name": "investigate_user",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "investigate_userDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Comprehensive investigation of user logon activity with built-in analysis.",
+      "input_schema": {
+        "properties": {
+          "days_back": {
+            "default": 30,
+            "description": "Days back (1-90)",
+            "maximum": 90,
+            "minimum": 1,
+            "title": "Days Back",
+            "type": "integer"
+          },
+          "username": {
+            "description": "Username or UPN to investigate",
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username"
+        ],
+        "title": "investigate_user_logonArguments",
+        "type": "object"
+      },
+      "name": "investigate_user_logon",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "investigate_user_logonOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "List Microsoft Entra Agent Identities using a feature-flagged Graph beta adapter.",
+      "input_schema": {
+        "properties": {
+          "top": {
+            "default": 50,
+            "description": "Maximum results (1-100)",
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          }
+        },
+        "title": "list_agent_identitiesArguments",
+        "type": "object"
+      },
+      "name": "list_agent_identities",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "list_agent_identitiesDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Execute a KQL query against Microsoft Defender Advanced Hunting.\n\n    Returns security telemetry from devices, emails, identities, and cloud apps.\n    Results limited to 10 000 rows / 30 days of data.\n    ",
+      "input_schema": {
+        "properties": {
+          "query": {
+            "description": "KQL query to execute. Must reference valid Advanced Hunting tables (e.g. DeviceProcessEvents, DeviceNetworkEvents, EmailEvents). Use 'ago()' for time ranges, 'project' to select columns, and 'limit' to control result size.",
+            "title": "Query",
+            "type": "string"
+          },
+          "timespan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional ISO 8601 duration (e.g. 'P1D', 'P7D', 'P30D'). Defaults to the query's own time filter.",
+            "title": "Timespan"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "run_hunting_queryArguments",
+        "type": "object"
+      },
+      "name": "run_hunting_query",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "run_hunting_queryOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Run selected threat-hunting modules with bounded concurrency and explicit failures.",
+      "input_schema": {
+        "properties": {
+          "days_back": {
+            "default": 7,
+            "description": "Days back (1-30)",
+            "maximum": 30,
+            "minimum": 1,
+            "title": "Days Back",
+            "type": "integer"
+          },
+          "detail_level": {
+            "default": "summary",
+            "enum": [
+              "summary",
+              "standard",
+              "evidence"
+            ],
+            "title": "Detail Level",
+            "type": "string"
+          },
+          "max_concurrency": {
+            "default": 3,
+            "description": "Concurrent steps (1-8)",
+            "maximum": 8,
+            "minimum": 1,
+            "title": "Max Concurrency",
+            "type": "integer"
+          },
+          "max_evidence": {
+            "default": 5,
+            "description": "Maximum evidence items (1-50)",
+            "maximum": 50,
+            "minimum": 1,
+            "title": "Max Evidence",
+            "type": "integer"
+          },
+          "modules": {
+            "items": {
+              "enum": [
+                "ransomware",
+                "powershell",
+                "lolbins",
+                "lateral_movement",
+                "credential_access",
+                "persistence",
+                "child_processes",
+                "remote_access",
+                "defense_evasion",
+                "threat_intel",
+                "data_exfiltration",
+                "asr"
+              ],
+              "type": "string"
+            },
+            "maxItems": 12,
+            "minItems": 1,
+            "title": "Modules",
+            "type": "array"
+          }
+        },
+        "required": [
+          "modules"
+        ],
+        "title": "run_threat_hunt_suiteArguments",
+        "type": "object"
+      },
+      "name": "run_threat_hunt_suite",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "run_threat_hunt_suiteDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Validate KQL query syntax without executing it.",
+      "input_schema": {
+        "properties": {
+          "query": {
+            "description": "KQL query to validate",
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "validate_kql_queryArguments",
+        "type": "object"
+      },
+      "name": "validate_kql_query",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "validate_kql_queryOutput",
+        "type": "object"
+      }
+    }
+  ]
+}

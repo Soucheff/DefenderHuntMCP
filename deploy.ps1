@@ -31,8 +31,8 @@
 
 .NOTES
     The script relies on the Container App's existing registry credentials or
-    managed identity. It does not configure MCP_API_KEY or Microsoft Graph
-    credentials. Use deploy-full.ps1 for initial evaluation infrastructure,
+    managed identity. It does not configure Entra application settings or
+    Microsoft Graph permissions. Use deploy-full.ps1 for initial infrastructure,
     then apply the production hardening documented in docs/deployment.md.
 #>
 

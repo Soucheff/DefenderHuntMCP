@@ -15,6 +15,8 @@ load_dotenv()
 TENANT_ID = os.getenv("AZURE_TENANT_ID")
 CLIENT_ID = os.getenv("AZURE_CLIENT_ID")
 CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET")
+CLIENT_CERTIFICATE_PATH = os.getenv("AZURE_CLIENT_CERTIFICATE_PATH")
+MCP_AUDIENCE = os.getenv("ENTRA_MCP_AUDIENCE") or CLIENT_ID
 
 # Microsoft Graph scopes
 SCOPES = ["https://graph.microsoft.com/.default"]
@@ -36,7 +38,7 @@ class Config:
     @classmethod
     def validate(cls) -> bool:
         """Check if all required environment variables are set."""
-        return all([TENANT_ID, CLIENT_ID, CLIENT_SECRET])
+        return all([TENANT_ID, CLIENT_ID, MCP_AUDIENCE])
 
     @classmethod
     def get_missing_vars(cls) -> list[str]:
@@ -46,6 +48,6 @@ class Config:
             missing.append("AZURE_TENANT_ID")
         if not CLIENT_ID:
             missing.append("AZURE_CLIENT_ID")
-        if not CLIENT_SECRET:
-            missing.append("AZURE_CLIENT_SECRET")
+        if not MCP_AUDIENCE:
+            missing.append("ENTRA_MCP_AUDIENCE")
         return missing

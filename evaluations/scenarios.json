@@ -1,0 +1,47 @@
+{
+  "schema_version": "1.0.0",
+  "release_targets": {
+    "minimum_mcp_call_reduction_percent": 50,
+    "minimum_output_token_reduction_percent": 50,
+    "minimum_evidence_recall_percent": 100,
+    "maximum_cross_identity_cache_leaks": 0
+  },
+  "scenarios": [
+    {
+      "id": "compromised-user-triage",
+      "workflow_tool": "investigate_user",
+      "baseline_tools": ["get_signin_logs", "get_risky_signins", "get_audit_logs"],
+      "required_evidence": ["sign-in summary", "risk state", "audit activity", "partial failure status"]
+    },
+    {
+      "id": "alert-triage",
+      "workflow_tool": "investigate_alert",
+      "baseline_tools": ["get_alert_details", "get_alert_statistics"],
+      "required_evidence": ["alert identity", "severity", "evidence", "environment context"]
+    },
+    {
+      "id": "five-ioc-hunt",
+      "workflow_tool": "hunt_iocs_batch",
+      "baseline_tools": ["enrich_ioc"],
+      "required_evidence": ["deduplicated IoCs", "first/last seen", "affected entities", "bounded evidence"]
+    },
+    {
+      "id": "scoped-threat-suite",
+      "workflow_tool": "run_threat_hunt_suite",
+      "baseline_tools": ["hunt_ransomware_indicators", "hunt_lateral_movement", "hunt_credential_access"],
+      "required_evidence": ["module status", "failed module count", "prioritized findings", "coverage gaps"]
+    },
+    {
+      "id": "agent-overprivilege-review",
+      "workflow_tool": "analyze_agent_permissions",
+      "baseline_tools": [],
+      "required_evidence": ["assignment count", "high-priority assignments", "analysis basis", "beta status"]
+    },
+    {
+      "id": "agent-profile-review",
+      "workflow_tool": "get_agent_identity_profile",
+      "baseline_tools": [],
+      "required_evidence": ["agent identity", "enabled state", "permission analysis", "beta status"]
+    }
+  ]
+}

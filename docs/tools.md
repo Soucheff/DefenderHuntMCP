@@ -1,6 +1,6 @@
 # MCP tools and resources
 
-The live server currently registers 31 tools and seven resources. All tools are read-oriented, but they execute against external Microsoft services and can expose sensitive tenant data.
+The live server currently registers 38 tools and eight resources. All tools are read-oriented, but they execute against external Microsoft services and can expose sensitive tenant data.
 
 ## Core hunting
 
@@ -21,7 +21,7 @@ The live server currently registers 31 tools and seven resources. All tools are 
 
 | Tool | Behavior |
 |---|---|
-| `get_threat_indicators` | Currently lists Defender Threat Intelligence profiles. Despite the historical name, it does not yet traverse profile indicator collections and should not be treated as a complete IoC list. |
+| `get_threat_indicators` | Lists Defender Threat Intelligence profile indicators through the Graph collection endpoint. |
 | `enrich_ioc` | Builds a hunting query for an IP, domain, URL, or hash and summarizes matching Defender telemetry. |
 | `hunt_by_ioc` | Searches relevant Advanced Hunting tables for IP, domain, URL, hash, or process values over at most 30 days. |
 
@@ -31,7 +31,7 @@ The Defender Threat Intelligence profile APIs require `ThreatIntelligence.Read.A
 
 | Tool | Behavior |
 |---|---|
-| `get_security_recommendations` | Currently retrieves Secure Score records. Secure Score records are historical tenant/control scores, not a standalone recommendation catalog. |
+| `get_security_recommendations` | Retrieves Secure Score control profiles with categories, impact, threats, and remediation guidance. |
 | `get_device_info` | Returns the most recent matching `DeviceInfo` row by device name or ID. |
 | `investigate_user_logon` | Summarizes `IdentityLogonEvents` for a username or UPN, including protocols, devices, IPs, and failures. |
 | `get_environment_dashboard` | Runs sequential alert, authentication, device, and network summary queries. |
@@ -44,7 +44,7 @@ The Defender Threat Intelligence profile APIs require `ThreatIntelligence.Read.A
 | `get_signin_logs` | Lists sign-ins with optional UPN prefix, application, success/failure, and risk-level filters. |
 | `get_audit_logs` | Lists directory audits with category/activity filters, then applies initiator and target filters in memory. |
 | `get_risky_users` | Lists Identity Protection risky users with level/state filters. |
-| `get_risky_signins` | Lists risky sign-ins with UPN and risk-level filters. The accepted `risk_state` argument is not currently applied. |
+| `get_risky_signins` | Lists risky sign-ins with escaped UPN, risk-level, and risk-state filters. |
 | `get_conditional_access_policies` | Lists Conditional Access policies and selected conditions/grant controls. |
 | `analyze_user_risk_profile` | Combines risky-user status and up to 500 sign-in records into a textual profile. |
 
@@ -62,10 +62,10 @@ The Defender Threat Intelligence profile APIs require `ThreatIntelligence.Read.A
 | `hunt_remote_access_tools` | Commercial RMM, known RAT names, and tunneling utilities. |
 | `hunt_defense_evasion` | Security-tool stopping, log clearing, timestomping, injection events. |
 | `hunt_threat_intel_feeds` | Public domain, IP, and hash feeds loaded through `externaldata()`. |
-| `hunt_data_exfiltration` | Large transfers, cloud storage, DNS tunneling, archives. The large-transfer/cloud branches currently rely on undocumented `DeviceNetworkEvents` fields and may fail. |
+| `hunt_data_exfiltration` | High-volume connection patterns, cloud storage, DNS tunneling, and archives using documented fields. Connection counts do not prove byte volume. |
 | `get_asr_events` | ASR blocked/audited events and a small static rule-description map. |
 
-Advanced hunt tools execute selected subqueries sequentially. `_multi_hunt` currently logs an individual query failure and returns an empty list for that branch, so `total_findings: 0` can mean either no findings or a failed subquery. Review server logs before concluding that a detection is clean.
+Advanced hunt tools currently execute selected subqueries sequentially. Each branch returns status, row count, results, and a sanitized error when it fails. The top-level response reports `success`, `partial_success`, or `error` and includes `failed_queries`, so a clean result can be distinguished from incomplete coverage.
 
 ## Resources
 
@@ -78,6 +78,28 @@ Advanced hunt tools execute selected subqueries sequentially. `_multi_hunt` curr
 | `entra://identity/signin-investigation` | Sign-in investigation guidance. |
 | `entra://identity/risk-investigation` | Risk investigation guidance. |
 | `entra://identity/conditional-access` | Conditional Access guidance. |
+| `defender://capabilities` | Auth modes, stable/beta capabilities, cache backends, contract version, and limits. |
+
+## Token-efficient workflows
+
+| Tool | Behavior |
+|---|---|
+| `investigate_user` | Runs sign-in, risky-sign-in, and audit steps concurrently with bounded evidence. |
+| `investigate_alert` | Combines one alert with environment alert statistics. |
+| `hunt_iocs_batch` | Deduplicates and enriches up to 20 IoCs with bounded concurrency. |
+| `run_threat_hunt_suite` | Executes selected hunt modules with an explicit concurrency budget and partial-failure reporting. |
+
+Workflow tools return structured objects with `contract_version`, status, failed steps, and compacted evidence.
+
+## Agent governance (beta)
+
+| Tool | Behavior |
+|---|---|
+| `list_agent_identities` | Feature-flagged beta inventory of Agent Identity service principals. |
+| `get_agent_identity_profile` | Agent profile plus bounded application-role assignments. |
+| `analyze_agent_permissions` | Explainable heuristic prioritization of app-role assignments. |
+
+These contracts are marked beta and return `unavailable` when disabled, unsupported, or unauthorized. Permission recommendations are heuristic and must be verified against effective Graph role definitions.
 
 ## Result interpretation
 

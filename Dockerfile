@@ -26,7 +26,7 @@ COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy application code
-COPY config.py server.py server_http.py ./
+COPY agent_governance.py auth_context.py auth_policy.py cache_backend.py cache_runtime.py cache_warmup.py config.py entra_auth.py graph_clients.py query_safety.py server.py server_http.py workflow_engine.py ./
 
 # Sensible defaults (override via env vars or --env-file at runtime)
 ENV HOST=0.0.0.0

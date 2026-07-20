@@ -1,63 +1,71 @@
 # Configuration
 
-Defender Hunt MCP reads configuration from environment variables. For local development, `python-dotenv` also loads a `.env` file from the working directory. Containers receive the same variables through Docker or Azure Container Apps.
+Defender Hunt MCP is single-tenant and accepts Microsoft Entra bearer access tokens only. `python-dotenv` loads `.env` for local development; Azure Container Apps receives non-secret settings from Bicep and uses managed identities wherever possible.
 
-## Variables
+## Authentication variables
 
-| Variable | Required | Default | Description |
-|---|---:|---|---|
-| `AZURE_TENANT_ID` | Yes | None | Microsoft Entra tenant ID used for Microsoft Graph application authentication. |
-| `AZURE_CLIENT_ID` | Yes | None | App registration client ID. |
-| `AZURE_CLIENT_SECRET` | Yes | None | App registration client secret. Store it as a secret, never in source control or an image. |
-| `MCP_API_KEY` | Production: Yes | Disabled | Shared key accepted in `X-API-Key` or `Authorization: Bearer <key>`. If omitted, `/mcp` is unauthenticated. |
-| `HOST` | No | `0.0.0.0` | HTTP bind address. |
-| `PORT` | No | `8000` | HTTP listen port inside the process/container. |
-| `MCP_PORT` | Compose only | `8000` | Host port published by `compose.yaml`; it does not change the container port. |
-| `LOG_LEVEL` | No | `INFO` | Python log level. Supported values: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
-| `DEBUG` | No | `false` | Enables Starlette debug mode when set to `true`. Do not enable in production. |
-| `ALLOWED_ORIGINS` | No | Empty | Comma-separated browser origins allowed by CORS. CORS middleware is disabled when empty. |
+| Variable | Required | Description |
+|---|---:|---|
+| `AZURE_TENANT_ID` | Yes | Single Microsoft Entra tenant accepted by inbound JWT validation and Graph clients. |
+| `AZURE_CLIENT_ID` | Yes | Client ID of the MCP resource/API app registration and confidential OBO client. |
+| `ENTRA_MCP_AUDIENCE` | Yes | JWT audience, normally `api://<AZURE_CLIENT_ID>`. |
+| `ENTRA_MCP_ISSUER` | Yes | Expected v2 issuer, normally `https://login.microsoftonline.com/<tenant>/v2.0`. |
+| `ENTRA_MCP_USER_SCOPE` | No | Required delegated scope. Default: `Mcp.Access`. |
+| `ENTRA_MCP_AGENT_ROLE` | No | Required base app role. Default: `Mcp.Invoke`. |
+| `AZURE_CLIENT_SECRET` | Local OBO | Local confidential credential. Do not use as the Azure production default. |
+| `AZURE_CLIENT_CERTIFICATE_PATH` | Production OBO | Certificate used by `OnBehalfOfCredential`; provision from Key Vault/secret volume. |
+| `AZURE_MANAGED_IDENTITY_CLIENT_ID` | Azure agents | User-assigned identity used for autonomous Graph calls and Azure Managed Redis. |
 
-Copy the template for local use:
+Inbound actors:
 
-```bash
-cp .env.example .env
-```
+- delegated user tokens must contain `Mcp.Access` in `scp`; Graph access uses OBO and remains bounded by both user and delegated app permissions;
+- autonomous app tokens must contain `Mcp.Invoke` in `roles`; Advanced Hunting also requires `Mcp.Hunt`; agent governance requires `Mcp.AgentGovernance`;
+- there is no API-key fallback and no automatic OBO-to-app-only fallback.
 
-The `.env` file is ignored by Git and excluded from the Docker build context. `.env.example` is intentionally tracked and must contain placeholders only.
+## Cache variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `CACHE_BACKEND` | `none` | `none`, `memory` (tests only), `redis`, or `azure-managed-redis`. |
+| `REDIS_URL` | `redis://localhost:6379/0` | Local Redis URL. Compose uses `redis://redis:6379/0`. |
+| `REDIS_KEY_PREFIX` | `defender-hunt` | Namespace prefix; values remain identity/permission isolated. |
+| `REDIS_HOST` | None | Azure Managed Redis hostname. |
+| `REDIS_PORT` | `10000` | Azure Managed Redis TLS port; Compose host port is also configurable. |
+| `REDIS_ENTRA_USERNAME` | None | Managed-identity object/principal ID used as Redis Entra username. |
+
+Local Compose runs the official Redis image with bounded memory, LRU eviction, no persistence, and a health check. Azure uses `redis-py` async credentials backed by `ManagedIdentityCredential` and scope `https://redis.azure.com/.default`.
+
+## Feature and runtime variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `ENABLE_AGENT_GOVERNANCE_BETA` | `false` | Enables isolated Microsoft Graph beta Agent Identity tools. |
+| `HOST` | `0.0.0.0` | HTTP bind address. |
+| `PORT` | `8000` | HTTP listen port. |
+| `MCP_PORT` | `8000` | Host port published by Compose. |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
+| `DEBUG` | `false` | Starlette debug mode; never enable in production. |
+| `ALLOWED_ORIGINS` | Empty | Comma-separated browser origins. CORS middleware is disabled when empty. |
 
 ## Microsoft Graph permissions
 
-Grant application permissions to the app registration and provide tenant-wide admin consent.
+Delegated permissions belong to the confidential MCP resource app and are used through OBO. Application permissions belong to the runtime managed identity and are used only for autonomous agents. Assign only permissions required by enabled tools.
 
-| Permission | Used for |
-|---|---|
-| `ThreatHunting.Read.All` | Microsoft Defender Advanced Hunting queries. |
-| `SecurityEvents.Read.All` | Security alerts and Secure Score data. |
-| `ThreatIntelligence.Read.All` | Defender Threat Intelligence profiles and profile indicators; this API also requires the applicable Defender Threat Intelligence license/add-on. |
-| `AuditLog.Read.All` | Entra sign-in and directory audit logs. |
-| `IdentityRiskyUser.Read.All` | Risky users and risk-related identity data. |
-| `Policy.Read.All` | Conditional Access policies. |
+Baseline families include:
 
-Only grant `Directory.Read.All` if a future feature explicitly needs broad directory reads; the currently documented tools do not require it as a baseline permission.
+- `ThreatHunting.Read.All` for Advanced Hunting;
+- `SecurityEvents.Read.All` for alerts and Secure Score controls;
+- `ThreatIntelligence.Read.All` for Defender Threat Intelligence;
+- `AuditLog.Read.All` for sign-ins and directory audit logs;
+- `IdentityRiskyUser.Read.All` for identity risk;
+- `Policy.Read.All` for Conditional Access;
+- directory/application read permissions for agent-governance role analysis, subject to tenant approval and beta API requirements.
 
-## Authentication boundaries
+Application roles for a managed identity are assigned to its service principal through Microsoft Graph. Bicep creates the identity; `deploy-full.ps1` can apply tenant-approved Graph app-role GUIDs after deployment.
 
-Two separate credentials are involved:
+## Public endpoints and health
 
-1. The MCP client authenticates to this server with `MCP_API_KEY`.
-2. The server authenticates to Microsoft Graph with the Entra application credentials.
-
-The API key does not preserve end-user identity and does not provide per-user authorization. Every authenticated MCP caller receives the effective Microsoft Graph access of the configured application. Deploy a dedicated instance per trust boundary and apply least-privilege Graph permissions.
-
-## Health and information endpoints
-
-- `GET /health` is public. It returns `200` when the three required Azure credential variables are present and `503` when any are missing. It checks configuration presence, not live Microsoft Graph connectivity.
-- `GET /info` is public and returns protocol/capability metadata.
-- `/mcp` is protected only when `MCP_API_KEY` is non-empty.
-
-Example:
-
-```bash
-curl --fail http://localhost:8000/health
-curl --fail http://localhost:8000/info
-```
+- `GET /health` and `GET /info` are public.
+- `/mcp` always requires a valid Entra bearer token.
+- Health validates required configuration presence, not live JWT metadata, Graph consent, Redis connectivity, licensing, or KQL execution.
+- `defender://capabilities` exposes stable/beta/disabled capabilities and operational limits to authenticated MCP clients.

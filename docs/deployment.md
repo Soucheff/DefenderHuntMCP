@@ -2,7 +2,7 @@
 
 ## Local Docker Compose
 
-Create `.env`, replace all placeholders, and start the service:
+Create `.env`, replace placeholders, and start the MCP plus official Redis image:
 
 ```bash
 cp .env.example .env
@@ -11,115 +11,62 @@ docker compose ps
 curl --fail http://localhost:8000/health
 ```
 
-`compose.yaml` applies these runtime controls:
+Compose applies a read-only root filesystem, drops Linux capabilities, enables `no-new-privileges`, provides bounded tmpfs storage, and waits for Redis health. Redis is development-only data: no persistence, 256 MiB max memory, and `allkeys-lru` eviction.
 
-- read-only root filesystem;
-- all Linux capabilities dropped;
-- `no-new-privileges` enabled;
-- writable `/tmp` provided as a 16 MiB `tmpfs`;
-- init process enabled;
-- restart policy `unless-stopped`.
+Use a real Entra access token issued for `ENTRA_MCP_AUDIENCE` when calling `/mcp`.
 
-Change only the published host port with `MCP_PORT`:
+## Azure architecture
 
-```bash
-MCP_PORT=8080 docker compose up --build -d
-```
+`infra/main.bicep` provisions:
 
-Stop and remove the service:
+- user-assigned managed identity;
+- ACR with admin credentials disabled and identity-based `AcrPull`;
+- Log Analytics and Container Apps environment;
+- Azure Managed Redis and encrypted database;
+- identity-based Redis role assignment when an approved role definition ID is supplied;
+- Container App with external TLS ingress, health probes, Entra settings, Managed Identity, and no API key/client-secret app-only dependency.
 
-```bash
-docker compose down
-```
+The runtime identity has three independent least-privilege uses:
 
-## Direct Docker execution
+1. pull images from ACR through `AcrPull`;
+2. authenticate passwordlessly to Azure Managed Redis;
+3. acquire app-only Microsoft Graph tokens for autonomous-agent calls.
 
-```bash
-docker build -t defender-hunt-mcp:local .
-docker run --rm --name defender-hunt-mcp \
-  --env-file .env \
-  --read-only \
-  --tmpfs /tmp:size=16m,mode=1777 \
-  --cap-drop ALL \
-  --security-opt no-new-privileges \
-  -p 8000:8000 \
-  defender-hunt-mcp:local
-```
+Interactive calls are separate: inbound delegated token -> MCP validation -> OBO certificate credential -> delegated Microsoft Graph token. OBO never falls back to Managed Identity.
 
-The multi-stage image uses Python 3.12 slim and a pinned `uv` binary. Dependencies are installed with `uv sync --frozen --no-dev`; development tools and `uv` are not copied into the runtime image. The process runs as the unprivileged `app` user.
-
-## Azure Container Apps
-
-Two PowerShell scripts are provided:
-
-- `deploy-full.ps1` provisions a resource group, ACR, Log Analytics workspace, Container Apps environment, then creates or updates the app.
-- `deploy.ps1` builds and pushes a new image, then updates an existing Container App.
+## Deploy
 
 Prerequisites:
 
 - PowerShell 7+
-- Azure CLI authenticated with `az login`
-- Docker Desktop/Engine
-- permissions to manage the target subscription/resource group
-
-Full deployment example:
+- Azure CLI with Bicep and `az login`
+- permission to deploy the resource group and assign roles
+- MCP resource/API app registration with `Mcp.Access`, `Mcp.Invoke`, `Mcp.Hunt`, and `Mcp.AgentGovernance` as applicable
+- tenant-approved delegated Graph permissions and Managed Identity Graph app-role GUIDs
 
 ```powershell
 ./deploy-full.ps1 `
-  -AppName defenderhuntmcp `
-  -Location eastus `
-  -MCP_API_KEY '<long-random-key>' `
-  -AZURE_TENANT_ID '<tenant-id>' `
-  -AZURE_CLIENT_ID '<client-id>' `
-  -AZURE_CLIENT_SECRET '<client-secret>'
+  -TenantId '<tenant-id>' `
+  -McpClientId '<mcp-resource-app-client-id>' `
+  -GraphAppRoleIds @('<ThreatHunting.Read.All-role-id>')
 ```
 
-Redeploy into resources discovered in the existing resource group:
+The script deploys a bootstrap image, builds the immutable application image through ACR, updates the Container App, and optionally assigns Graph app roles to the runtime identity. It never enables the ACR admin account.
 
-```powershell
-./deploy-full.ps1 -AppName defenderhuntmcp -SkipInfra
-```
+`deploy.ps1` remains a thin rollout script for existing resources.
 
-Update an explicitly named existing app/registry:
+## Production completion checklist
 
-```powershell
-./deploy.ps1 `
-  -AcrName myacr `
-  -AppName defenderhuntmcp-app `
-  -ResourceGroup rg-defenderhuntmcp
-```
+The checked-in Bicep compiles locally, but tenant deployment still requires environment-specific completion and live validation:
 
-## Current Azure script security model
+- approve the exact Azure Managed Redis data-plane role and pass its full role definition ID;
+- add Private Endpoint, private DNS, and VNet integration for Redis before production traffic;
+- provision the OBO certificate in Key Vault and mount/retrieve it without exposing secret material;
+- approve and assign exact Graph delegated/application permissions;
+- enable Agent Identity beta only in a test tenant before production;
+- configure diagnostic settings, authentication/429/cache alerts, budgets, revision traffic, rollback, and SLOs;
+- execute live user OBO, autonomous Managed Identity, Redis token refresh, claims-challenge, and revocation tests.
 
-The provisioning script currently:
+## Cache warm-up
 
-- creates external ingress;
-- allows scale-to-zero with zero to three replicas;
-- enables the ACR administrative account and supplies registry username/password;
-- passes Graph credentials and the MCP API key as Container App environment values;
-- permits deployment without `MCP_API_KEY`.
-
-These defaults are suitable for controlled evaluation, not a hardened production deployment. Before production use:
-
-1. Require authentication and refuse startup/deployment without `MCP_API_KEY`, or replace shared-key authentication with Entra ID token validation.
-2. Store secrets as Container Apps secrets or Azure Key Vault references.
-3. Use a managed identity with `AcrPull` instead of ACR admin credentials.
-4. Prefer workload identity/managed identity for Microsoft Graph where supported; otherwise rotate the client secret and scope it narrowly.
-5. Configure IP restrictions, private networking, API Management, or another trusted ingress boundary.
-6. Add rate limiting, monitoring alerts, and an explicit minimum replica/SLO decision.
-7. Configure revision traffic and rollback policy for production releases.
-
-The MCP transport is configured as stateless HTTP, so it can scale horizontally without session affinity.
-
-## Verification
-
-After deployment:
-
-```bash
-curl --fail https://<fqdn>/health
-curl --fail https://<fqdn>/info
-```
-
-For `/mcp`, send `X-API-Key` or a bearer value matching `MCP_API_KEY`. A bare POST should return HTTP `401` when authentication is enabled.
-
-The health endpoint verifies only that required environment values are present. It does not prove that Microsoft Graph credentials, consent, licenses, or network access are valid; execute a low-impact tool call as a separate dependency check.
+A future Container Apps Job should warm only tenant-stable data: Conditional Access, Secure Score control profiles, threat-intelligence metadata, approved mirrored feeds, and agent inventory/permission catalogs. Do not warm user-specific sign-ins, risky users/sign-ins, alerts, incident evidence, raw hunting results, or arbitrary KQL.
