@@ -17,7 +17,7 @@ _cache_backend_name: str | None = None
 
 
 def _permission_fingerprint(identity: RequestIdentity) -> str:
-    permissions = sorted((*identity.scopes, *identity.roles))
+    permissions = sorted((*identity.scopes, *identity.roles, identity.client_id))
     return hashlib.sha256("\n".join(permissions).encode()).hexdigest()[:24]
 
 

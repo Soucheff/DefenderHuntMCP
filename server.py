@@ -322,7 +322,12 @@ def resource_capabilities() -> str:
             "server": "defender_hunt_mcp",
             "server_version": "3.0.0",
             "contract_version": "1.0.0",
-            "auth_modes": ["entra_delegated_obo", "entra_application_managed_identity"],
+            "auth_modes": [
+                "entra_user_obo",
+                "entra_agent_id_delegated_obo",
+                "entra_agent_id_autonomous",
+                "entra_application_managed_identity_legacy",
+            ],
             "capabilities": {
                 "atomic_tools": {"status": "stable"},
                 "workflow_tools": {"status": "beta"},

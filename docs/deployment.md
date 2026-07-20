@@ -24,15 +24,15 @@ Use a real Entra access token issued for `ENTRA_MCP_AUDIENCE` when calling `/mcp
 - Log Analytics and Container Apps environment;
 - Azure Managed Redis and encrypted database;
 - identity-based Redis role assignment when an approved role definition ID is supplied;
-- Container App with external TLS ingress, health probes, Entra settings, Managed Identity, and no API key/client-secret app-only dependency.
+- Container App with external TLS ingress, health probes, Entra settings, and Managed Identity.
 
-The runtime identity has three independent least-privilege uses:
+The runtime identity has independent least-privilege uses:
 
 1. pull images from ACR through `AcrPull`;
 2. authenticate passwordlessly to Azure Managed Redis;
-3. acquire app-only Microsoft Graph tokens for autonomous-agent calls.
+3. acquire app-only Microsoft Graph tokens for autonomous Agent ID and other approved application calls.
 
-Interactive calls are separate: inbound delegated token -> MCP validation -> OBO certificate credential -> delegated Microsoft Graph token. OBO never falls back to Managed Identity.
+The Agent ID sidecar, when used, runs with the calling agent and acquires a token for the MCP audience. The MCP validates that inbound token. Ordinary users and delegated Agent IDs then use standard downstream OBO; autonomous Agent IDs use the MCP runtime Managed Identity for downstream Graph access. OBO never falls back automatically to app-only access.
 
 ## Deploy
 
@@ -42,7 +42,7 @@ Prerequisites:
 - Azure CLI with Bicep and `az login`
 - permission to deploy the resource group and assign roles
 - MCP resource/API app registration with `Mcp.Access`, `Mcp.Invoke`, `Mcp.Hunt`, and `Mcp.AgentGovernance` as applicable
-- tenant-approved delegated Graph permissions and Managed Identity Graph app-role GUIDs
+- tenant-approved delegated Graph permissions, runtime Managed Identity Graph application permissions, and MCP roles assigned to Agent Identities
 
 ```powershell
 ./deploy-full.ps1 `
@@ -51,7 +51,7 @@ Prerequisites:
   -GraphAppRoleIds @('<ThreatHunting.Read.All-role-id>')
 ```
 
-The script deploys a bootstrap image, builds the immutable application image through ACR, updates the Container App, and optionally assigns Graph app roles to the runtime identity. It never enables the ACR admin account.
+The script deploys a bootstrap image, builds the immutable application image through ACR, updates the Container App, and can assign temporary Graph app roles to the runtime identity for legacy callers. It never enables the ACR admin account.
 
 `deploy.ps1` remains a thin rollout script for existing resources.
 
@@ -61,11 +61,12 @@ The checked-in Bicep compiles locally, but tenant deployment still requires envi
 
 - approve the exact Azure Managed Redis data-plane role and pass its full role definition ID;
 - add Private Endpoint, private DNS, and VNet integration for Redis before production traffic;
-- provision the OBO certificate in Key Vault and mount/retrieve it without exposing secret material;
-- approve and assign exact Graph delegated/application permissions;
+- provision the OBO certificate in Key Vault and grant the runtime identity least-privilege read access without exposing secret material;
+- configure `agentClientIds` after the approved Agent Identities exist and assign each identity only the required MCP app roles;
+- approve delegated Graph permissions for MCP OBO and assign autonomous Graph application permissions to the runtime Managed Identity;
 - enable Agent Identity beta only in a test tenant before production;
 - configure diagnostic settings, authentication/429/cache alerts, budgets, revision traffic, rollback, and SLOs;
-- execute live user OBO, autonomous Managed Identity, Redis token refresh, claims-challenge, and revocation tests.
+- execute live user OBO, delegated Agent ID OBO, autonomous Agent ID through Managed Identity, Redis token refresh, claims-challenge, and revocation tests.
 
 ## Cache warm-up
 

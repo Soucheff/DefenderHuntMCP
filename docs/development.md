@@ -87,7 +87,7 @@ This verifies the MCP transport and authentication only. Tool calls require vali
 | `config.py` | Environment loading and required-variable validation. |
 | `query_safety.py` | Central validation and quoting for caller-provided KQL/OData literals. |
 | `entra_auth.py`, `auth_context.py`, `auth_policy.py` | JWT validation, request identity, and per-capability authorization. |
-| `graph_clients.py` | Delegated OBO and autonomous Managed Identity Graph routing. |
+| `graph_clients.py` | Standard OBO for delegated callers and Managed Identity routing for app-only callers. |
 | `cache_backend.py`, `cache_runtime.py` | Redis/in-memory backends, identity-isolated keys, cache-aside, and Azure Managed Redis credentials. |
 | `workflow_engine.py` | Bounded concurrent orchestration and compact result normalization. |
 | `agent_governance.py` | Feature-flagged Microsoft Graph beta adapter and permission analysis. |

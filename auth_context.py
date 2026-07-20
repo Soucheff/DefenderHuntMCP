@@ -2,7 +2,7 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import Literal
 
-ActorType = Literal["user", "agent"]
+ActorType = Literal["user", "delegated_agent", "autonomous_agent"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -11,6 +11,7 @@ class RequestIdentity:
     actor_type: ActorType
     subject_id: str
     client_id: str
+    agent_id: str | None = None
     scopes: frozenset[str] = field(default_factory=frozenset)
     roles: frozenset[str] = field(default_factory=frozenset)
     user_assertion: str | None = field(default=None, repr=False, compare=False)

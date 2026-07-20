@@ -16,7 +16,7 @@ async def warm_cache() -> dict[str, str]:
     subject_id = os.getenv("AZURE_MANAGED_IDENTITY_PRINCIPAL_ID", client_id)
     identity = RequestIdentity(
         tenant_id=tenant_id,
-        actor_type="agent",
+        actor_type="autonomous_agent",
         subject_id=subject_id,
         client_id=client_id,
         roles=frozenset({"Mcp.Invoke"}),

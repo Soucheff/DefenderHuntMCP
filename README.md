@@ -149,7 +149,8 @@ The complete behavioral reference, inputs, caveats, and result semantics are doc
 | `ENTRA_MCP_AUDIENCE` | Yes | Audience of access tokens issued for the MCP resource API. |
 | `ENTRA_MCP_ISSUER` | Yes | Single-tenant Entra v2 issuer. |
 | `AZURE_CLIENT_SECRET` or certificate | OBO only | Confidential credential for delegated OBO; use a Key Vault-backed certificate in Azure. |
-| `AZURE_MANAGED_IDENTITY_CLIENT_ID` | Azure agents | User-assigned identity for autonomous Graph and Azure Managed Redis access. |
+| `ENTRA_AGENT_CLIENT_IDS` | Agent ID | Comma-separated allowlist of approved Microsoft Entra Agent Identity client IDs. |
+| `AZURE_MANAGED_IDENTITY_CLIENT_ID` | Azure | User-assigned infrastructure identity for Redis, ACR/Key Vault, and temporary legacy Graph access. |
 | `LOG_LEVEL` | No | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`). Defaults to `INFO`. |
 | `PORT` | No | HTTP listen port inside the container. Defaults to `8000`. |
 | `HOST` | No | HTTP bind address. Defaults to `0.0.0.0`. |
@@ -243,7 +244,7 @@ docker compose down
 
 ## Transport
 
-The FastMCP server uses **stateless Streamable HTTP**, allowing horizontal scaling without session affinity. `/mcp` accepts only Microsoft Entra bearer access tokens for the configured audience and tenant. Delegated users call Graph via OBO; autonomous applications require MCP app roles and use the Container App managed identity for Graph.
+The FastMCP server uses **stateless Streamable HTTP**, allowing horizontal scaling without session affinity. `/mcp` accepts only Microsoft Entra bearer access tokens for the configured audience and tenant. Any Agent ID sidecar runs with the calling agent and obtains this inbound token. Delegated users and delegated Agent IDs use MCP OBO for Graph; autonomous Agent IDs use the Container App Managed Identity for downstream Graph access.
 
 Example initialize request:
 

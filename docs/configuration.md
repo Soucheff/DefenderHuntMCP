@@ -8,18 +8,21 @@ Defender Hunt MCP is single-tenant and accepts Microsoft Entra bearer access tok
 |---|---:|---|
 | `AZURE_TENANT_ID` | Yes | Single Microsoft Entra tenant accepted by inbound JWT validation and Graph clients. |
 | `AZURE_CLIENT_ID` | Yes | Client ID of the MCP resource/API app registration and confidential OBO client. |
-| `ENTRA_MCP_AUDIENCE` | Yes | JWT audience, normally `api://<AZURE_CLIENT_ID>`. |
+| `ENTRA_MCP_AUDIENCE` | Yes | JWT audience. With `requestedAccessTokenVersion=2`, use the MCP app client ID GUID. Clients still request the exposed scope as `api://<client-id>/<scope>`. |
 | `ENTRA_MCP_ISSUER` | Yes | Expected v2 issuer, normally `https://login.microsoftonline.com/<tenant>/v2.0`. |
 | `ENTRA_MCP_USER_SCOPE` | No | Required delegated scope. Default: `Mcp.Access`. |
 | `ENTRA_MCP_AGENT_ROLE` | No | Required base app role. Default: `Mcp.Invoke`. |
+| `ENTRA_AGENT_CLIENT_IDS` | Agent ID | Comma-separated allowlist of Entra Agent Identity client IDs. Required to distinguish delegated agents from ordinary delegated clients without relying on undocumented preview claims. |
 | `AZURE_CLIENT_SECRET` | Local OBO | Local confidential credential. Do not use as the Azure production default. |
 | `AZURE_CLIENT_CERTIFICATE_PATH` | Production OBO | Certificate used by `OnBehalfOfCredential`; provision from Key Vault/secret volume. |
-| `AZURE_MANAGED_IDENTITY_CLIENT_ID` | Azure agents | User-assigned identity used for autonomous Graph calls and Azure Managed Redis. |
+| `AZURE_MANAGED_IDENTITY_CLIENT_ID` | Azure | User-assigned identity used for Azure Managed Redis, ACR/Key Vault access, and the temporary legacy app-caller Graph path. |
 
 Inbound actors:
 
-- delegated user tokens must contain `Mcp.Access` in `scp`; Graph access uses OBO and remains bounded by both user and delegated app permissions;
-- autonomous app tokens must contain `Mcp.Invoke` in `roles`; Advanced Hunting also requires `Mcp.Hunt`; agent governance requires `Mcp.AgentGovernance`;
+- delegated user tokens must contain `Mcp.Access` in `scp`; Graph access uses standard OBO;
+- delegated Agent ID tokens are acquired by the agent workload for the MCP audience, contain the required user scope, and have a client ID in `ENTRA_AGENT_CLIENT_IDS`; the MCP validates that token and uses its assertion in the standard downstream Graph OBO flow;
+- autonomous Agent ID tokens are acquired by the agent workload for the MCP audience, contain `Mcp.Invoke` in `roles`, and have a client ID in `ENTRA_AGENT_CLIENT_IDS`; the MCP validates the caller and uses its runtime Managed Identity for downstream app-only Graph access;
+- unknown application callers with valid MCP roles use the same Managed Identity downstream route during migration;
 - there is no API-key fallback and no automatic OBO-to-app-only fallback.
 
 ## Cache variables
@@ -49,7 +52,7 @@ Local Compose runs the official Redis image with bounded memory, LRU eviction, n
 
 ## Microsoft Graph permissions
 
-Delegated permissions belong to the confidential MCP resource app and are used through OBO. Application permissions belong to the runtime managed identity and are used only for autonomous agents. Assign only permissions required by enabled tools.
+Delegated permissions belong to the MCP confidential client and are used for ordinary users and delegated Agent IDs through OBO. Application permissions for autonomous Graph operations belong to the MCP runtime Managed Identity. Agent Identities receive MCP application roles, not Graph permissions, unless the agent calls Graph directly outside the MCP. Assign only permissions required by enabled tools.
 
 Baseline families include:
 
@@ -61,7 +64,7 @@ Baseline families include:
 - `Policy.Read.All` for Conditional Access;
 - directory/application read permissions for agent-governance role analysis, subject to tenant approval and beta API requirements.
 
-Application roles for a managed identity are assigned to its service principal through Microsoft Graph. Bicep creates the identity; `deploy-full.ps1` can apply tenant-approved Graph app-role GUIDs after deployment.
+MCP application roles are assigned to each autonomous Agent Identity service principal. Graph application roles required by MCP tools are assigned to the runtime Managed Identity through `deploy-full.ps1`.
 
 ## Public endpoints and health
 

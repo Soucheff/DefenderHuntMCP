@@ -11,9 +11,17 @@ def authorize_identity(
     agent_role: str | None = None,
     user_scope: str | None = None,
 ) -> None:
-    if identity.actor_type == "agent" and agent_role and agent_role not in identity.roles:
+    if (
+        identity.actor_type == "autonomous_agent"
+        and agent_role
+        and agent_role not in identity.roles
+    ):
         raise AuthorizationError(f"Required application role is missing: {agent_role}")
-    if identity.actor_type == "user" and user_scope and user_scope not in identity.scopes:
+    if (
+        identity.actor_type in {"user", "delegated_agent"}
+        and user_scope
+        and user_scope not in identity.scopes
+    ):
         raise AuthorizationError(f"Required delegated scope is missing: {user_scope}")
 
 

@@ -7,7 +7,7 @@ from auth_policy import AuthorizationError, authorize_identity
 def test_agent_requires_explicit_hunt_role() -> None:
     identity = RequestIdentity(
         tenant_id="tenant",
-        actor_type="agent",
+        actor_type="autonomous_agent",
         subject_id="agent",
         client_id="client",
         roles=frozenset({"Mcp.Invoke"}),
@@ -20,7 +20,7 @@ def test_agent_requires_explicit_hunt_role() -> None:
 def test_agent_with_hunt_role_is_authorized() -> None:
     identity = RequestIdentity(
         tenant_id="tenant",
-        actor_type="agent",
+        actor_type="autonomous_agent",
         subject_id="agent",
         client_id="client",
         roles=frozenset({"Mcp.Invoke", "Mcp.Hunt"}),

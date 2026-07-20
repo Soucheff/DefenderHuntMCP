@@ -22,6 +22,7 @@ class EntraAuthSettings:
     issuer: str
     required_user_scope: str = "Mcp.Access"
     required_agent_role: str = "Mcp.Invoke"
+    agent_client_ids: frozenset[str] = frozenset()
 
     @classmethod
     def from_environment(cls) -> "EntraAuthSettings":
@@ -40,6 +41,11 @@ class EntraAuthSettings:
             issuer=issuer,
             required_user_scope=os.getenv("ENTRA_MCP_USER_SCOPE", "Mcp.Access"),
             required_agent_role=os.getenv("ENTRA_MCP_AGENT_ROLE", "Mcp.Invoke"),
+            agent_client_ids=frozenset(
+                client_id.strip()
+                for client_id in os.getenv("ENTRA_AGENT_CLIENT_IDS", "").split(",")
+                if client_id.strip()
+            ),
         )
 
 
@@ -84,11 +90,13 @@ class EntraTokenValidator:
         if scopes:
             if self.settings.required_user_scope not in scopes:
                 raise AuthenticationError("Required delegated scope is missing")
+            is_delegated_agent = client_id in self.settings.agent_client_ids
             return RequestIdentity(
                 tenant_id=self.settings.tenant_id,
-                actor_type="user",
+                actor_type="delegated_agent" if is_delegated_agent else "user",
                 subject_id=subject_id,
                 client_id=client_id,
+                agent_id=client_id if is_delegated_agent else None,
                 scopes=scopes,
                 roles=roles,
                 user_assertion=token,
@@ -96,11 +104,13 @@ class EntraTokenValidator:
 
         if self.settings.required_agent_role not in roles:
             raise AuthenticationError("Required application role is missing")
+        is_autonomous_agent = client_id in self.settings.agent_client_ids
         return RequestIdentity(
             tenant_id=self.settings.tenant_id,
-            actor_type="agent",
+            actor_type="autonomous_agent",
             subject_id=subject_id,
             client_id=client_id,
+            agent_id=client_id if is_autonomous_agent else None,
             scopes=scopes,
             roles=roles,
         )

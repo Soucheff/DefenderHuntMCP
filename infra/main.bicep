@@ -20,6 +20,9 @@ param mcpClientId string
 @description('Issuer expected in inbound Entra access tokens.')
 param mcpIssuer string = '${environment().authentication.loginEndpoint}${tenantId}/v2.0'
 
+@description('Comma-separated allowlist of Microsoft Entra Agent Identity client IDs.')
+param agentClientIds string = ''
+
 @description('Optional Redis data-plane role definition resource ID. Leave empty until the tenant-approved Azure Managed Redis role is selected.')
 param redisDataRoleDefinitionId string = ''
 
@@ -174,11 +177,15 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             }
             {
               name: 'ENTRA_MCP_AUDIENCE'
-              value: 'api://${mcpClientId}'
+              value: mcpClientId
             }
             {
               name: 'ENTRA_MCP_ISSUER'
               value: mcpIssuer
+            }
+            {
+              name: 'ENTRA_AGENT_CLIENT_IDS'
+              value: agentClientIds
             }
             {
               name: 'AZURE_MANAGED_IDENTITY_CLIENT_ID'

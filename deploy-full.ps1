@@ -7,10 +7,10 @@
     user-assigned managed identity, builds/pushes the image through ACR, and
     updates the Container App to an immutable image tag.
 
-    The managed identity is used for ACR pull, autonomous Microsoft Graph calls,
-    and Azure Managed Redis authentication. Interactive user calls use OBO through
-    the MCP resource app registration. The script never enables the ACR admin
-    account and does not accept an MCP API key.
+    The managed identity is used for ACR pull, Azure resource access, and
+    Microsoft Graph application calls. Approved Agent Identities authenticate
+    before calling the MCP. The script never enables the ACR admin account and
+    does not accept an MCP API key.
 
 .PARAMETER NamePrefix
     Lowercase resource prefix. Default: defenderhuntmcp.
@@ -34,7 +34,10 @@
 
 .PARAMETER GraphAppRoleIds
     Microsoft Graph application role GUIDs to assign to the runtime managed
-    identity for autonomous-agent tools. Admin privileges are required.
+    identity for legacy callers during migration. Admin privileges are required.
+
+.PARAMETER AgentClientIds
+    Approved Microsoft Entra Agent Identity client IDs.
 
 .EXAMPLE
     ./deploy-full.ps1 `
@@ -51,7 +54,8 @@ param(
     [Parameter(Mandatory)][string]$McpClientId,
     [string]$ImageTag = (Get-Date -Format "yyyyMMdd-HHmmss"),
     [string]$RedisDataRoleDefinitionId = "",
-    [string[]]$GraphAppRoleIds = @()
+    [string[]]$GraphAppRoleIds = @(),
+    [string[]]$AgentClientIds = @()
 )
 
 Set-StrictMode -Version Latest
@@ -69,6 +73,7 @@ if (-not $account) { throw "Not logged in to Azure. Run 'az login'." }
 $resourceGroup = "rg-$NamePrefix"
 $deploymentName = "$NamePrefix-infra"
 $bootstrapImage = "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest"
+$agentClientIdsValue = $AgentClientIds -join ","
 
 az group create --name $resourceGroup --location $Location -o none
 if ($LASTEXITCODE -ne 0) { throw "Resource group deployment failed." }
@@ -83,6 +88,7 @@ $deployment = az deployment group create `
         containerImage=$bootstrapImage `
         tenantId=$TenantId `
         mcpClientId=$McpClientId `
+        agentClientIds=$agentClientIdsValue `
         redisDataRoleDefinitionId=$RedisDataRoleDefinitionId `
     -o json | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw "Bicep deployment failed." }

@@ -33,7 +33,7 @@ def _token(private_key, *, scopes: str = "", roles: list[str] | None = None, tid
     return jwt.encode(claims, private_key, algorithm="RS256", headers={"kid": "test"})
 
 
-def _validator(public_key) -> EntraTokenValidator:
+def _validator(public_key, *, agent_client_ids: frozenset[str] = frozenset()) -> EntraTokenValidator:
     async def resolve(_token: str):
         return public_key
 
@@ -42,6 +42,7 @@ def _validator(public_key) -> EntraTokenValidator:
             tenant_id="tenant",
             audience="api://defender-hunt",
             issuer="https://login.microsoftonline.com/tenant/v2.0",
+            agent_client_ids=agent_client_ids,
         ),
         signing_key_resolver=resolve,
     )
@@ -65,13 +66,32 @@ async def test_validates_delegated_user_token(signing_material) -> None:
 async def test_validates_autonomous_agent_token(signing_material) -> None:
     private_key, public_key = signing_material
 
-    identity = await _validator(public_key).validate(
+    identity = await _validator(
+        public_key,
+        agent_client_ids=frozenset({"caller-client"}),
+    ).validate(
         _token(private_key, roles=["Mcp.Invoke", "Mcp.Hunt"])
     )
 
-    assert identity.actor_type == "agent"
+    assert identity.actor_type == "autonomous_agent"
+    assert identity.agent_id == "caller-client"
     assert identity.user_assertion is None
     assert "Mcp.Invoke" in identity.roles
+
+
+@pytest.mark.asyncio
+async def test_validates_delegated_agent_token(signing_material) -> None:
+    private_key, public_key = signing_material
+
+    identity = await _validator(
+        public_key,
+        agent_client_ids=frozenset({"caller-client"}),
+    ).validate(_token(private_key, scopes="Mcp.Access ThreatHunting.Read.All"))
+
+    assert identity.actor_type == "delegated_agent"
+    assert identity.subject_id == "subject"
+    assert identity.agent_id == "caller-client"
+    assert identity.user_assertion is not None
 
 
 @pytest.mark.asyncio

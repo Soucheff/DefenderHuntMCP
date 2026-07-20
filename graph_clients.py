@@ -51,12 +51,12 @@ class GraphClientFactory:
         )
 
     def get_client(self, identity: RequestIdentity) -> GraphServiceClient:
-        if identity.actor_type == "user":
+        if identity.actor_type in {"user", "delegated_agent"}:
             return self._get_obo_client(identity)
         return self._get_managed_client()
 
     async def get_access_token(self, identity: RequestIdentity) -> str:
-        if identity.actor_type == "user":
+        if identity.actor_type in {"user", "delegated_agent"}:
             credential = self._create_obo_credential(identity)
         else:
             credential = self._get_managed_credential()

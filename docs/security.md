@@ -6,7 +6,7 @@ Defender Hunt MCP exposes tenant security and identity telemetry. Treat it as a 
 
 - MCP clients authenticate with single-tenant Microsoft Entra access tokens for the MCP audience.
 - Delegated users require `Mcp.Access` and call Graph through OBO.
-- Autonomous applications require MCP app roles and call Graph through the Container App managed identity.
+- Agent workloads obtain tokens for the MCP audience. The MCP validates their scopes or roles; delegated Agent IDs call Graph through MCP OBO, while autonomous Agent IDs use the Container App Managed Identity downstream.
 - Advanced Hunting for autonomous callers requires `Mcp.Hunt`; beta governance requires `Mcp.AgentGovernance`.
 - Request identity is propagated with `contextvars`; there is no fallback between delegated and app-only Graph access.
 - `/health` and `/info` are intentionally public.
