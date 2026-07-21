@@ -1691,7 +1691,7 @@
         "openWorldHint": true,
         "readOnlyHint": true
       },
-      "description": "Comprehensive investigation of user logon activity with built-in analysis.",
+      "description": "Investigate Microsoft Entra sign-ins from Defender Advanced Hunting.",
       "input_schema": {
         "properties": {
           "days_back": {

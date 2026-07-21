@@ -52,6 +52,7 @@ junit.xml
 .ipynb_checkpoints/
 
 # Logs, local databases, and runtime files
+.local/
 *.log
 logs/
 *.pid

@@ -14,9 +14,12 @@ services:
     ports:
       - "${MCP_PORT:-8000}:8000"
     environment:
+      AZURE_CLIENT_CERTIFICATE_PATH: /run/secrets/obo-certificate.pem
       CACHE_BACKEND: redis
       REDIS_URL: redis://redis:6379/0
       REDIS_KEY_PREFIX: defender-hunt:dev
+    volumes:
+      - ./.local/entra-certs/obo.pem:/run/secrets/obo-certificate.pem:ro
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777

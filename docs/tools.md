@@ -33,7 +33,7 @@ The Defender Threat Intelligence profile APIs require `ThreatIntelligence.Read.A
 |---|---|
 | `get_security_recommendations` | Retrieves Secure Score control profiles with categories, impact, threats, and remediation guidance. |
 | `get_device_info` | Returns the most recent matching `DeviceInfo` row by device name or ID. |
-| `investigate_user_logon` | Summarizes `IdentityLogonEvents` for a username or UPN, including protocols, devices, IPs, and failures. |
+| `investigate_user_logon` | Summarizes Defender `EntraIdSignInEvents` for a username or UPN, including apps, devices, IPs, risk, Conditional Access, and failures; falls back to Graph when unavailable. |
 | `get_environment_dashboard` | Runs sequential alert, authentication, device, and network summary queries. |
 | `analyze_security_posture` | Runs selected identity, device, and network summaries and emits static recommendations. The `applications` focus currently has no dedicated query. |
 

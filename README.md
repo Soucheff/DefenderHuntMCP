@@ -44,7 +44,7 @@ A Model Context Protocol (MCP) server for **Microsoft Defender Advanced Hunting*
 |---|---|
 | `get_security_recommendations` | Retrieve Microsoft Secure Score control profiles and remediation guidance. |
 | `get_device_info` | Get detailed information about a device by name or ID. |
-| `investigate_user_logon` | Comprehensive user logon activity investigation from `IdentityLogonEvents`. |
+| `investigate_user_logon` | Entra sign-in investigation from Defender `EntraIdSignInEvents`, with Graph fallback. |
 | `get_environment_dashboard` | Full security dashboard: alerts, auth, devices, and network overview. |
 | `analyze_security_posture` | Analyse security posture with insights on identity, devices, network, and applications. |
 

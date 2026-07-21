@@ -480,6 +480,7 @@ async def validate_kql_query(
         "emailattachmentinfo",
         "emailurlinfo",
         "identitylogonevents",
+        "entraidsigninevents",
         "identityqueryevents",
         "identitydirectoryevents",
         "cloudappevents",
@@ -518,7 +519,7 @@ async def get_security_alerts(
     """Retrieve security alerts from Microsoft Defender."""
     try:
         from msgraph.generated.security.alerts_v2.alerts_v2_request_builder import (
-            AlertsV2RequestBuilder,
+            Alerts_v2RequestBuilder,
         )
 
         client = get_graph_client()
@@ -529,11 +530,11 @@ async def get_security_alerts(
             filters.append(f"status eq {quote_odata_string(status)}")
         filter_query = " and ".join(filters) if filters else None
 
-        query_params = AlertsV2RequestBuilder.AlertsV2RequestBuilderGetQueryParameters(
+        query_params = Alerts_v2RequestBuilder.Alerts_v2RequestBuilderGetQueryParameters(
             top=min(top, 100),
             filter=filter_query,
         )
-        request_config = AlertsV2RequestBuilder.AlertsV2RequestBuilderGetRequestConfiguration(
+        request_config = Alerts_v2RequestBuilder.Alerts_v2RequestBuilderGetRequestConfiguration(
             query_parameters=query_params,
         )
         alerts = await client.security.alerts_v2.get(request_configuration=request_config)
@@ -871,36 +872,47 @@ async def investigate_user_logon(
     username: Annotated[str, Field(description="Username or UPN to investigate")],
     days_back: DaysBack90 = 30,
 ) -> str:
-    """Comprehensive investigation of user logon activity with built-in analysis."""
+    """Investigate Microsoft Entra sign-ins from Defender Advanced Hunting."""
     if not username:
         return "Error: username parameter is required"
     days = min(days_back, 90)
+    hunting_days = min(days, 30)
     username_literal = quote_kql_string(username)
     if "@" in username:
-        kql_filter_user = f" | where AccountUpn == {username_literal}"
+        kql_filter_user = f"| where AccountUpn =~ {username_literal}"
     else:
-        kql_filter_user = f" | where AccountName == {username_literal}"
+        kql_filter_user = (
+            f'| where tostring(split(AccountUpn, "@")[0]) =~ {username_literal} '
+            f"or AccountDisplayName =~ {username_literal}"
+        )
     try:
-        kql_filter = kql_filter_user
         kql = f"""
-IdentityLogonEvents
-| where Timestamp > ago({days}d)
-{kql_filter}
-| project Timestamp, AccountName, AccountDomain, AccountUpn,
-          Protocol, LogonType, Application, DeviceName,
-          IPAddress, ISP, Location, ActionType, FailureReason
-| sort by Timestamp desc"""
+EntraIdSignInEvents
+| where Timestamp > ago({hunting_days}d)
+{kql_filter_user}
+| project Timestamp, AccountDisplayName, AccountObjectId, AccountUpn,
+          Application, ResourceDisplayName, ClientAppUsed, LogonType,
+          DeviceName, OSPlatform, IPAddress, City, Country, ErrorCode,
+          RiskLevelAggregated, RiskLevelDuringSignIn, RiskState,
+          ConditionalAccessStatus
+| sort by Timestamp desc
+| limit 500"""
         result = await _run_hunting(kql)
         events = result.get("results", [])
         if not events:
-            return f"No logon events found for user '{username}' in the last {days} days"
+            return await _investigate_entra_signins(username, min(days, 30))
 
-        protocols: dict[str, int] = {}
+        applications: dict[str, int] = {}
+        resources: dict[str, int] = {}
+        client_apps: dict[str, int] = {}
         logon_types: dict[str, int] = {}
         devices: dict[str, int] = {}
         ips: dict[str, int] = {}
-        actions: dict[str, int] = {}
         failed_logins: list[dict] = []
+        recent_signins: list[dict] = []
+        successful = 0
+        failed = 0
+        risky = 0
 
         for ev in events:
             d = (
@@ -910,62 +922,159 @@ IdentityLogonEvents
                 if isinstance(ev, dict)
                 else {}
             )
-            prot = str(d.get("Protocol", "Unknown"))
-            lt = str(d.get("LogonType", "Unknown"))
-            dev = str(d.get("DeviceName", "Unknown"))
-            ip = str(d.get("IPAddress", ""))
-            act = str(d.get("ActionType", "Unknown"))
-            protocols[prot] = protocols.get(prot, 0) + 1
-            logon_types[lt] = logon_types.get(lt, 0) + 1
-            devices[dev] = devices.get(dev, 0) + 1
-            if ip:
-                ips[ip] = ips.get(ip, 0) + 1
-            actions[act] = actions.get(act, 0) + 1
-            if act == "LogonFailed":
+            error_code = int(d.get("ErrorCode") or 0)
+            if error_code == 0:
+                successful += 1
+            else:
+                failed += 1
                 failed_logins.append(d)
+            risk_values = (
+                d.get("RiskLevelAggregated"),
+                d.get("RiskLevelDuringSignIn"),
+                d.get("RiskState"),
+            )
+            if any(
+                str(value).casefold() not in {"", "0", "none", "unknown", "null"}
+                for value in risk_values
+            ):
+                risky += 1
 
-        total = len(events)
-        lines = [
-            "=" * 80,
-            f"USER LOGON INVESTIGATION: {username}",
-            "=" * 80,
-            f"\nAnalysis Period: Last {days} days",
-            f"Total Events: {total}",
-            f"Successful Logins: {actions.get('LogonSuccess', 0)}",
-            f"Failed Logins: {actions.get('LogonFailed', 0)}",
-            "\n--- AUTHENTICATION PROTOCOLS ---",
-        ]
-        for p, c in sorted(protocols.items(), key=lambda x: x[1], reverse=True):
-            lines.append(f"  {p:20s} | {c:4d} events | {c / total * 100:5.1f}%")
-        lines.append("\n--- LOGON TYPES ---")
-        for lt, c in sorted(logon_types.items(), key=lambda x: x[1], reverse=True):
-            lines.append(f"  {lt:20s} | {c:4d} events | {c / total * 100:5.1f}%")
-        lines.append("\n--- DEVICES ACCESSED ---")
-        for dev, c in sorted(devices.items(), key=lambda x: x[1], reverse=True)[:10]:
-            lines.append(f"  {dev:35s} | {c:4d} events")
-        if ips:
-            lines.append("\n--- SOURCE IP ADDRESSES ---")
-            for ip, c in sorted(ips.items(), key=lambda x: x[1], reverse=True)[:10]:
-                lines.append(f"  {ip:20s} | {c:4d} events")
-        if failed_logins:
-            lines.append(f"\n*** FAILED LOGIN ATTEMPTS ({len(failed_logins)}) ***")
-            for i, f_ in enumerate(failed_logins[:10], 1):
-                lines.append(
-                    f"  [{i}] {f_.get('Timestamp')} | Device: {f_.get('DeviceName')} | Reason: {f_.get('FailureReason')}"
-                )
-        lines.append("\n--- SECURITY OBSERVATIONS ---")
-        if failed_logins:
-            lines.append(f"  ! {len(failed_logins)} failed login(s) — investigate for brute force")
-        if protocols.get("Ntlm", 0) > 0:
-            lines.append(f"  ! {protocols['Ntlm']} NTLM auth(s) — consider migrating to Kerberos")
-        if len(devices) > 5:
-            lines.append(f"  i User authenticated from {len(devices)} different devices")
-        if not failed_logins and protocols.get("Ntlm", 0) == 0:
-            lines.append("  OK — No immediate security concerns")
-        lines.append("=" * 80)
-        return "\n".join(lines)
+            for counts, value in (
+                (applications, d.get("Application")),
+                (resources, d.get("ResourceDisplayName")),
+                (client_apps, d.get("ClientAppUsed")),
+                (logon_types, d.get("LogonType")),
+                (devices, d.get("DeviceName")),
+                (ips, d.get("IPAddress")),
+            ):
+                if value:
+                    key = str(value)
+                    counts[key] = counts.get(key, 0) + 1
+            if len(recent_signins) < 20:
+                recent_signins.append(d)
+
+        def top_counts(values: dict[str, int], limit: int = 10) -> list[dict[str, object]]:
+            return [
+                {"value": value, "count": count}
+                for value, count in sorted(
+                    values.items(), key=lambda item: item[1], reverse=True
+                )[:limit]
+            ]
+
+        return _json(
+            {
+                "status": "success",
+                "source": "defender_advanced_hunting_EntraIdSignInEvents",
+                "username": username,
+                "requestedDays": days,
+                "analyzedDays": hunting_days,
+                "count": len(events),
+                "resultLimit": 500,
+                "truncated": len(events) == 500,
+                "successful": successful,
+                "failed": failed,
+                "risky": risky,
+                "applications": top_counts(applications),
+                "resources": top_counts(resources),
+                "clientApps": top_counts(client_apps),
+                "logonTypes": top_counts(logon_types),
+                "devices": top_counts(devices),
+                "ipAddresses": top_counts(ips),
+                "failedSignIns": failed_logins[:20],
+                "recentSignIns": recent_signins,
+            }
+        )
     except Exception as e:
         return _error_response("investigate_user_logon", e)
+
+
+async def _investigate_entra_signins(username: str, days: int) -> str:
+    """Analyze Entra sign-ins when Defender for Identity has no logon telemetry."""
+    raw_result = await get_signin_logs(
+        user_principal_name=username,
+        status="all",
+        risk_level="all",
+        days_back=days,
+        top=500,
+    )
+    payload = json.loads(raw_result)
+    if payload.get("status") != "success":
+        return raw_result
+
+    normalized_username = username.casefold()
+    logs = [
+        log
+        for log in payload.get("logs", [])
+        if str(log.get("userPrincipalName", "")).casefold() == normalized_username
+    ]
+    if not logs:
+        return _json(
+            {
+                "status": "success",
+                "source": "microsoft_graph_auditLogs_signIns",
+                "coverage": "IdentityLogonEvents had no matching telemetry; Entra sign-ins queried",
+                "username": username,
+                "days": days,
+                "count": 0,
+                "message": "No Microsoft Entra sign-ins found in the requested period",
+            }
+        )
+
+    applications: dict[str, int] = {}
+    client_apps: dict[str, int] = {}
+    ip_addresses: dict[str, int] = {}
+    locations: dict[str, int] = {}
+    successful = 0
+    failed = 0
+    risky = 0
+    for log in logs:
+        status = log.get("status") or {}
+        if status.get("errorCode") == 0:
+            successful += 1
+        else:
+            failed += 1
+        if log.get("riskLevel") and "none" not in str(log["riskLevel"]).casefold():
+            risky += 1
+        for counts, value in (
+            (applications, log.get("appDisplayName")),
+            (client_apps, log.get("clientAppUsed")),
+            (ip_addresses, log.get("ipAddress")),
+        ):
+            if value:
+                counts[str(value)] = counts.get(str(value), 0) + 1
+        location = log.get("location") or {}
+        location_name = ", ".join(
+            str(location[key]) for key in ("city", "state", "country") if location.get(key)
+        )
+        if location_name:
+            locations[location_name] = locations.get(location_name, 0) + 1
+
+    def top_counts(values: dict[str, int], limit: int = 10) -> list[dict[str, object]]:
+        return [
+            {"value": value, "count": count}
+            for value, count in sorted(values.items(), key=lambda item: item[1], reverse=True)[
+                :limit
+            ]
+        ]
+
+    return _json(
+        {
+            "status": "success",
+            "source": "microsoft_graph_auditLogs_signIns",
+            "coverage": "IdentityLogonEvents had no matching telemetry; Entra sign-ins queried",
+            "username": username,
+            "days": days,
+            "count": len(logs),
+            "successful": successful,
+            "failed": failed,
+            "risky": risky,
+            "applications": top_counts(applications),
+            "clientApps": top_counts(client_apps),
+            "ipAddresses": top_counts(ip_addresses),
+            "locations": top_counts(locations),
+            "recentSignIns": logs[:20],
+        }
+    )
 
 
 @read_only_tool()

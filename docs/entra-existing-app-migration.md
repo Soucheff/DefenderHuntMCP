@@ -46,13 +46,29 @@ After all clients migrate, disable the unused scope first, wait through the comp
 
 The current manifest has no `appRoles`, so autonomous callers cannot obtain the roles enforced by Defender Hunt MCP 3.0. Add three application roles with new stable GUIDs:
 
-| Value | Allowed member type | Purpose |
-|---|---|---|
-| `Mcp.Invoke` | `Application` | Base access to the MCP. |
-| `Mcp.Hunt` | `Application` | Advanced Hunting and threat-suite execution. |
-| `Mcp.AgentGovernance` | `Application` | Agent Identity governance tools. |
+| Value | ID | Allowed member type | Purpose |
+|---|---|---|---|
+| `Mcp.Invoke` | `b0aef454-48d1-42d4-a230-0b5f23b4cd2c` | `Application` | Base access to the MCP. |
+| `Mcp.Hunt` | `c66240d8-f35c-43f3-88de-83c3bf160791` | `Application` | Advanced Hunting and threat-suite execution. |
+| `Mcp.AgentGovernance` | `804a8f58-ba93-43f6-bc6d-6f53e830611d` | `Application` | Agent Identity governance tools. |
 
 Assign these roles only to approved autonomous service principals or Agent Identities. Human delegated access continues through the exposed OAuth scope, not these application roles.
+
+The canonical delegated scope is `Mcp.Access` (`135272c1-10bd-4280-b5c5-6e1d6709b451`). The legacy `access_as_user` and `user_impersonation` scopes remain enabled during the client migration window.
+
+## Applied tenant state
+
+The target tenant migration was applied and verified on 2026-07-20:
+
+- three MCP application roles are enabled and propagated to the service principal;
+- `Mcp.Access` is enabled and preauthorized for the existing Azure API Connections client alongside both legacy scopes;
+- 11 Microsoft Graph delegated permissions have tenant-wide admin consent for OBO;
+- Graph application permissions and the obsolete self-reference were removed from `requiredResourceAccess`;
+- the 18 residual Graph application role assignments and obsolete self delegated grant were revoked;
+- the stale Container Apps Easy Auth redirect was removed; the Security Copilot callback remains;
+- the service-principal lock remains enabled;
+- password and federated credentials are absent;
+- a certificate credential named `Defender Hunt MCP OBO 2026-2027` is valid through 2027-07-21; its private key must be imported into Key Vault before production deployment.
 
 ## Delegated Graph permissions for OBO
 

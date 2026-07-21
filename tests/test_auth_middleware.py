@@ -1,4 +1,5 @@
 from starlette.applications import Starlette
+from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -89,3 +90,33 @@ def test_authenticated_token_initializes_mcp() -> None:
 
     assert response.status_code == 200
     assert "defender_hunt_mcp" in response.text
+
+
+def test_inspector_cors_preflight_allows_protocol_version() -> None:
+    app = CORSMiddleware(
+        _app(),
+        allow_origins=["http://localhost:6274"],
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "Mcp-Protocol-Version",
+            "Mcp-Session-Id",
+        ],
+    )
+
+    with TestClient(app) as client:
+        response = client.options(
+            "/mcp",
+            headers={
+                "Origin": "http://localhost:6274",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": (
+                    "authorization,content-type,mcp-protocol-version"
+                ),
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["Access-Control-Allow-Origin"] == "http://localhost:6274"
+    assert "Mcp-Protocol-Version" in response.headers["Access-Control-Allow-Headers"]

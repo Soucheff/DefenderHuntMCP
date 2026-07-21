@@ -173,7 +173,12 @@ def create_app(token_validator: EntraTokenValidator | None = None) -> Starlette:
                 allow_origins=ALLOWED_ORIGINS,
                 allow_credentials=False,
                 allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-                allow_headers=["Authorization", "Content-Type", "Mcp-Session-Id"],
+                allow_headers=[
+                    "Authorization",
+                    "Content-Type",
+                    "Mcp-Protocol-Version",
+                    "Mcp-Session-Id",
+                ],
                 expose_headers=["Mcp-Session-Id"],
             ),
         )
