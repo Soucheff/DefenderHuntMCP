@@ -175,8 +175,10 @@ def _json(obj: Any) -> str:
 GRAPH_QUERY_TIMEOUT_SECONDS = 20
 
 
-async def _with_graph_timeout(awaitable: Any, seconds: int = GRAPH_QUERY_TIMEOUT_SECONDS) -> Any:
-    return await asyncio.wait_for(awaitable, timeout=seconds)
+async def _with_graph_timeout(awaitable: Any, seconds: int | None = None) -> Any:
+    return await asyncio.wait_for(
+        awaitable, timeout=seconds if seconds is not None else GRAPH_QUERY_TIMEOUT_SECONDS
+    )
 
 
 def _error_response(operation: str, error: Exception) -> str:
