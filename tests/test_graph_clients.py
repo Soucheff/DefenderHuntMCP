@@ -1,10 +1,19 @@
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 import graph_clients
 from auth_context import RequestIdentity
 from graph_clients import GraphClientFactory
+
+
+@pytest.fixture(autouse=True)
+def _reset_request_graph_state():
+    graph_clients._request_credentials.set(())
+    graph_clients._request_obo_client.set(None)
+    yield
+    graph_clients._request_credentials.set(())
+    graph_clients._request_obo_client.set(None)
 
 
 def test_user_identity_builds_obo_client(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -115,3 +124,58 @@ def test_user_identity_requires_obo_credential() -> None:
 
     with pytest.raises(RuntimeError, match="OBO client credential"):
         factory.get_client(identity)
+
+
+@pytest.mark.asyncio
+async def test_obo_client_is_memoized_within_a_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    obo_constructor = MagicMock(return_value=AsyncMock())
+    graph_constructor = MagicMock(side_effect=lambda **_: object())
+    monkeypatch.setattr(graph_clients, "OnBehalfOfCredential", obo_constructor)
+    monkeypatch.setattr(graph_clients, "GraphServiceClient", graph_constructor)
+    factory = GraphClientFactory("tenant", "mcp-client", client_secret="secret")
+    identity = RequestIdentity(
+        tenant_id="tenant",
+        actor_type="user",
+        subject_id="user",
+        client_id="caller",
+        scopes=frozenset({"Mcp.Access"}),
+        user_assertion="assertion",
+    )
+
+    try:
+        first = factory.get_client(identity)
+        second = factory.get_client(identity)
+
+        assert first is second
+        assert graph_constructor.call_count == 1
+        assert obo_constructor.call_count == 1
+    finally:
+        await graph_clients.close_request_credentials()
+
+
+@pytest.mark.asyncio
+async def test_close_request_credentials_resets_memoized_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    obo_constructor = MagicMock(return_value=AsyncMock())
+    graph_constructor = MagicMock(side_effect=lambda **_: object())
+    monkeypatch.setattr(graph_clients, "OnBehalfOfCredential", obo_constructor)
+    monkeypatch.setattr(graph_clients, "GraphServiceClient", graph_constructor)
+    factory = GraphClientFactory("tenant", "mcp-client", client_secret="secret")
+    identity = RequestIdentity(
+        tenant_id="tenant",
+        actor_type="user",
+        subject_id="user",
+        client_id="caller",
+        scopes=frozenset({"Mcp.Access"}),
+        user_assertion="assertion",
+    )
+
+    factory.get_client(identity)
+    await graph_clients.close_request_credentials()
+    factory.get_client(identity)
+
+    assert graph_constructor.call_count == 2
+    await graph_clients.close_request_credentials()

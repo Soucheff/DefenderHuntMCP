@@ -6,6 +6,7 @@ from agent_governance import (
     AgentGovernanceUnavailable,
     analyze_permission_assignments,
 )
+from server import _agent_risk_assessment
 
 
 @pytest.mark.asyncio
@@ -81,3 +82,24 @@ def test_permission_analysis_is_bounded_and_explainable() -> None:
     assert analysis["assignment_count"] == 1
     assert analysis["high_priority_count"] == 1
     assert "Heuristic" in analysis["analysis_basis"]
+
+
+def test_agent_risk_assessment_is_explainable_and_bounded() -> None:
+    assessment = _agent_risk_assessment(
+        {"enabled": True, "app_role_assignment_required": False},
+        [
+            {
+                "id": "assignment",
+                "appRoleId": "role",
+                "resourceDisplayName": "Directory ReadWrite All",
+            }
+        ],
+    )
+
+    assert assessment["risk_score"] == 40
+    assert assessment["risk_level"] == "medium"
+    assert {finding["type"] for finding in assessment["findings"]} == {
+        "high_priority_assignments",
+        "app_role_assignment_not_required",
+    }
+    assert "Heuristic" in assessment["analysis_basis"]

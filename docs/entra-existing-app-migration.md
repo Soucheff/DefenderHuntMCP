@@ -92,7 +92,9 @@ Add only delegated permissions required by enabled user-facing tools. Candidate 
 
 Grant tenant admin consent after review. Effective OBO authorization remains the intersection of these delegated permissions and the signed-in user's privileges.
 
-Do not add broad directory/group/device permissions unless a concrete tool and endpoint require them.
+The identity investigation tools introduced after the original migration also require delegated `User.Read.All`, `LicenseAssignment.Read.All` where license details aren't covered by an approved broader permission, `UserAuthenticationMethod.Read.All`, `RoleManagement.Read.Directory`, `RoleEligibilitySchedule.Read.Directory`, `RoleAssignmentSchedule.Read.Directory`, `Group.Read.All`, and `GroupMember.Read.All`. Add `Member.Read.Hidden` only if hidden-membership groups must be analyzed. `AuditLog.Read.All`, `Policy.Read.ConditionalAccess`, `IdentityRiskyUser.Read.All`, and `SecurityAlert.Read.All` remain required for registration/sign-in reporting, applied CA, Identity Protection, and identity-alert correlation. Resolve current permission IDs from the Microsoft Graph service principal instead of copying stale IDs into automation.
+
+Do not add other broad directory/group/device permissions unless a concrete tool and endpoint require them.
 
 ## Application permissions and runtime Managed Identity
 
@@ -103,8 +105,8 @@ The existing manifest declares these Microsoft Graph application permissions:
 | `b0afded3-3588-46d8-8b3d-9842eff778da` | `AuditLog.Read.All` | Assign to the runtime Managed Identity if autonomous identity tools need it. |
 | `7438b122-aefc-4978-80ed-43db9fcc7715` | `Device.Read.All` | Remove unless a direct Graph device endpoint is introduced. Current device telemetry is Advanced Hunting. |
 | `ae73097b-cb2a-4447-b064-5d80f6093921` | `DirectoryRecommendations.Read.All` | Remove; current tool uses Secure Score control profiles. |
-| `5b567255-7703-4780-807c-7be8301ae99b` | `Group.Read.All` | Remove unless a documented group-governance tool requires it. |
-| `98830695-27a2-44f7-8c18-0c3ebc9698f6` | `GroupMember.Read.All` | Remove unless a documented membership tool requires it. |
+| `5b567255-7703-4780-807c-7be8301ae99b` | `Group.Read.All` | Assign to the runtime Managed Identity for group inventory and full group properties. |
+| `98830695-27a2-44f7-8c18-0c3ebc9698f6` | `GroupMember.Read.All` | Assign to the runtime Managed Identity for owners and direct/transitive membership. |
 | `6e472fd1-ad78-48da-a0f0-97ab2c6b769e` | `IdentityRiskEvent.Read.All` | Remove unless risk-detection APIs are added. |
 | `4aadfb66-d49a-414a-a883-d8c240b6fa33` | `IdentityRiskyAgent.Read.All` | Assign to the runtime Managed Identity only if risky-agent tools are enabled. |
 | `607c7344-0eed-41e5-823a-9695ebe1b7b0` | `IdentityRiskyServicePrincipal.Read.All` | Assign to the runtime Managed Identity only if workload-risk tools are enabled. |
@@ -119,7 +121,7 @@ The existing manifest declares these Microsoft Graph application permissions:
 | `86632667-cd15-4845-ad89-48a88e8412e1` | `ThreatSubmission.Read.All` | Remove; not used by current tools. |
 | `df021288-bdef-4463-88db-98f22de89214` | `User.Read.All` | Remove unless a direct Graph user-profile tool is added. |
 
-Also assign `SecurityAlert.Read.All`, `Application.Read.All`, and `AgentIdentity.Read.All` to the runtime Managed Identity when autonomous MCP tools require them. Agent-specific authorization remains enforced by MCP app roles on the inbound token.
+Also assign `SecurityAlert.Read.All`, `Application.Read.All`, `AgentIdentity.Read.All`, `User.Read.All`, `LicenseAssignment.Read.All`, `UserAuthenticationMethod.Read.All`, `RoleManagement.Read.Directory`, `RoleEligibilitySchedule.Read.Directory`, and `RoleAssignmentSchedule.Read.Directory` to the runtime Managed Identity when the corresponding autonomous MCP tools require them. Agent-specific authorization remains enforced by MCP app roles on the inbound token.
 
 Removing entries from `requiredResourceAccess` changes what the application requests, but verify and remove existing service-principal `appRoleAssignments` as a separate step. Do not assume editing the manifest automatically revokes already granted permissions.
 

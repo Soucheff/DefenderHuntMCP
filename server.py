@@ -59,6 +59,10 @@ AlertStatus = Literal["new", "inProgress", "resolved", "unknown"]
 SignInStatus = Literal["success", "failure", "all"]
 RiskLevel = Literal["none", "low", "medium", "high", "all"]
 RiskState = Literal["atRisk", "confirmedCompromised", "remediated", "dismissed", "all"]
+RoleAssignmentState = Literal["active", "eligible", "all"]
+IdentityGroupType = Literal["all", "security", "microsoft365", "role_assignable"]
+GroupMembershipScope = Literal["direct", "transitive"]
+IdentityTimeRange = Literal["1h", "24h", "7d", "30d", "90d"]
 DetailLevel = Literal["summary", "standard", "evidence"]
 MaxEvidence = Annotated[int, Field(ge=1, le=50, description="Maximum evidence items (1-50)")]
 WorkflowConcurrency = Annotated[int, Field(ge=1, le=8, description="Concurrent steps (1-8)")]
@@ -1247,6 +1251,1508 @@ DeviceNetworkEvents | where Timestamp > ago(24h) | where RemoteIPType == "Public
 # =========================================================================
 
 
+async def _fetch_directory_role_definitions() -> list[dict[str, Any]]:
+    """Return compact, JSON-serializable directory role definitions for caching."""
+    from msgraph.generated.role_management.directory.role_definitions.role_definitions_request_builder import (
+        RoleDefinitionsRequestBuilder,
+    )
+
+    qp = RoleDefinitionsRequestBuilder.RoleDefinitionsRequestBuilderGetQueryParameters(
+        select=["id", "displayName", "templateId", "isBuiltIn"], top=500
+    )
+    cfg = RoleDefinitionsRequestBuilder.RoleDefinitionsRequestBuilderGetRequestConfiguration(
+        query_parameters=qp
+    )
+    result = await get_graph_client().role_management.directory.role_definitions.get(
+        request_configuration=cfg
+    )
+    return [
+        {
+            "id": item.id,
+            "displayName": item.display_name,
+            "templateId": item.template_id,
+            "isBuiltIn": item.is_built_in,
+        }
+        for item in (result.value if result and result.value else [])
+    ]
+
+
+@read_only_tool()
+async def get_users_by_directory_role(
+    role: Annotated[
+        str,
+        Field(
+            min_length=2,
+            max_length=256,
+            description="Exact directory role display name or template ID, for example Global Administrator",
+        ),
+    ],
+    assignment_state: Annotated[
+        RoleAssignmentState,
+        Field(description="active|eligible|all; eligible includes PIM eligibility"),
+    ] = "active",
+    expand_group_members: Annotated[
+        bool,
+        Field(description="Resolve users inherited through role-assignable groups"),
+    ] = True,
+    top: ResultLimit200 = 100,
+) -> str:
+    """List principals assigned or eligible for a Microsoft Entra directory role."""
+    top = min(top, 200)
+    try:
+        client = get_graph_client()
+        definitions, _ = await cached_operation(
+            "directory_role_definitions",
+            {},
+            3600,
+            _fetch_directory_role_definitions,
+        )
+        normalized_role = role.casefold()
+        definition = next(
+            (
+                item
+                for item in definitions
+                if normalized_role
+                in {
+                    (item["displayName"] or "").casefold(),
+                    (item["templateId"] or "").casefold(),
+                }
+            ),
+            None,
+        )
+        if definition is None:
+            return _json(
+                {
+                    "status": "success",
+                    "count": 0,
+                    "message": f"Directory role not found: {role}",
+                }
+            )
+
+        assignments: list[tuple[str, Any]] = []
+        assignment_filter = f"roleDefinitionId eq {quote_odata_string(definition['id'])}"
+        if assignment_state in {"active", "all"}:
+            from msgraph.generated.role_management.directory.role_assignments.role_assignments_request_builder import (
+                RoleAssignmentsRequestBuilder,
+            )
+
+            active_qp = RoleAssignmentsRequestBuilder.RoleAssignmentsRequestBuilderGetQueryParameters(
+                filter=assignment_filter, expand=["principal"], top=top
+            )
+            active_cfg = RoleAssignmentsRequestBuilder.RoleAssignmentsRequestBuilderGetRequestConfiguration(
+                query_parameters=active_qp
+            )
+            active = await client.role_management.directory.role_assignments.get(
+                request_configuration=active_cfg
+            )
+            assignments.extend(
+                ("active", item) for item in (active.value if active and active.value else [])
+            )
+
+        if assignment_state in {"eligible", "all"}:
+            from msgraph.generated.role_management.directory.role_eligibility_schedule_instances.role_eligibility_schedule_instances_request_builder import (
+                RoleEligibilityScheduleInstancesRequestBuilder,
+            )
+
+            eligible_qp = RoleEligibilityScheduleInstancesRequestBuilder.RoleEligibilityScheduleInstancesRequestBuilderGetQueryParameters(
+                filter=assignment_filter, expand=["principal"], top=top
+            )
+            eligible_cfg = RoleEligibilityScheduleInstancesRequestBuilder.RoleEligibilityScheduleInstancesRequestBuilderGetRequestConfiguration(
+                query_parameters=eligible_qp
+            )
+            eligible = await client.role_management.directory.role_eligibility_schedule_instances.get(
+                request_configuration=eligible_cfg
+            )
+            assignments.extend(
+                ("eligible", item)
+                for item in (eligible.value if eligible and eligible.value else [])
+            )
+
+        principals: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for state, assignment in assignments:
+            principal = assignment.principal
+            if principal is None or not principal.id or (principal.id, state) in seen:
+                continue
+            seen.add((principal.id, state))
+            principal_type = type(principal).__name__.removesuffix("able")
+            principals.append(
+                {
+                    "id": principal.id,
+                    "displayName": getattr(principal, "display_name", None),
+                    "userPrincipalName": getattr(principal, "user_principal_name", None),
+                    "principalType": principal_type,
+                    "assignmentState": state,
+                    "assignmentVia": "direct",
+                    "directoryScopeId": getattr(assignment, "directory_scope_id", None),
+                }
+            )
+
+        group_resolution_errors: list[dict[str, str]] = []
+        inherited_users: list[dict[str, Any]] = []
+        if expand_group_members:
+            from msgraph.generated.groups.item.transitive_members.transitive_members_request_builder import (
+                TransitiveMembersRequestBuilder,
+            )
+
+            group_query = TransitiveMembersRequestBuilder.TransitiveMembersRequestBuilderGetQueryParameters(
+                top=top
+            )
+            group_config = TransitiveMembersRequestBuilder.TransitiveMembersRequestBuilderGetRequestConfiguration(
+                query_parameters=group_query
+            )
+            for group in (item for item in principals if item["principalType"] == "Group"):
+                try:
+                    group_members = await client.groups.by_group_id(
+                        group["id"]
+                    ).transitive_members.get(request_configuration=group_config)
+                    for member in (
+                        group_members.value if group_members and group_members.value else []
+                    ):
+                        if type(member).__name__.removesuffix("able") != "User":
+                            continue
+                        inherited_users.append(
+                            {
+                                "id": member.id,
+                                "displayName": getattr(member, "display_name", None),
+                                "userPrincipalName": getattr(member, "user_principal_name", None),
+                                "principalType": "User",
+                                "assignmentState": group["assignmentState"],
+                                "assignmentVia": {
+                                    "groupId": group["id"],
+                                    "groupDisplayName": group["displayName"],
+                                },
+                                "directoryScopeId": group["directoryScopeId"],
+                            }
+                        )
+                except Exception as error:
+                    logger.warning(
+                        "Directory role group expansion failed for %s: %s", group["id"], error
+                    )
+                    group_resolution_errors.append(
+                        {"groupId": group["id"], "error": "Group members unavailable"}
+                    )
+
+        users = [item for item in principals if item["principalType"] == "User"]
+        user_keys = {(item["id"], item["assignmentState"]) for item in users}
+        for inherited_user in inherited_users:
+            key = (inherited_user["id"], inherited_user["assignmentState"])
+            if key not in user_keys:
+                user_keys.add(key)
+                users.append(inherited_user)
+
+        return _json(
+            {
+                "status": "success",
+                "role": {
+                    "id": definition["id"],
+                    "displayName": definition["displayName"],
+                    "templateId": definition["templateId"],
+                    "isBuiltIn": definition["isBuiltIn"],
+                },
+                "assignmentState": assignment_state,
+                "count": len(principals),
+                "userCount": len(users),
+                "users": users,
+                "groupAssignments": [
+                    item for item in principals if item["principalType"] == "Group"
+                ],
+                "groupResolutionErrors": group_resolution_errors,
+                "otherPrincipals": [
+                    item
+                    for item in principals
+                    if item["principalType"] not in {"User", "Group"}
+                ],
+            }
+        )
+    except Exception as e:
+        return _error_response("get_users_by_directory_role", e)
+
+
+@read_only_tool()
+async def list_identity_groups(
+    display_name_prefix: Annotated[
+        str | None,
+        Field(
+            min_length=1,
+            max_length=256,
+            description="Optional case-insensitive display name prefix",
+        ),
+    ] = None,
+    group_type: Annotated[
+        IdentityGroupType,
+        Field(description="all|security|microsoft365|role_assignable"),
+    ] = "all",
+    top: ResultLimit200 = 100,
+) -> str:
+    """List Microsoft Entra groups for identity and access analysis."""
+    top = min(top, 200)
+    try:
+        client = get_graph_client()
+        from msgraph.generated.groups.groups_request_builder import GroupsRequestBuilder
+
+        filters = []
+        if display_name_prefix:
+            filters.append(
+                f"startswith(displayName, {quote_odata_string(display_name_prefix)})"
+            )
+        if group_type == "security":
+            filters.append("securityEnabled eq true")
+        elif group_type == "microsoft365":
+            filters.append("groupTypes/any(value:value eq 'Unified')")
+        elif group_type == "role_assignable":
+            filters.append("isAssignableToRole eq true")
+
+        query = GroupsRequestBuilder.GroupsRequestBuilderGetQueryParameters(
+            filter=" and ".join(filters) if filters else None,
+            select=[
+                "id",
+                "displayName",
+                "description",
+                "mail",
+                "mailEnabled",
+                "securityEnabled",
+                "groupTypes",
+                "membershipRule",
+                "membershipRuleProcessingState",
+                "isAssignableToRole",
+            ],
+            top=top,
+        )
+        config = GroupsRequestBuilder.GroupsRequestBuilderGetRequestConfiguration(
+            query_parameters=query
+        )
+        result = await client.groups.get(request_configuration=config)
+        groups = [
+            {
+                "id": group.id,
+                "displayName": group.display_name,
+                "description": group.description,
+                "mail": group.mail,
+                "mailEnabled": group.mail_enabled,
+                "securityEnabled": group.security_enabled,
+                "groupTypes": group.group_types or [],
+                "membershipType": "dynamic" if group.membership_rule else "assigned",
+                "membershipRule": group.membership_rule,
+                "membershipRuleProcessingState": str(group.membership_rule_processing_state)
+                if group.membership_rule_processing_state
+                else None,
+                "isAssignableToRole": group.is_assignable_to_role,
+            }
+            for group in (result.value if result and result.value else [])
+        ]
+        return _json(
+            {
+                "status": "success",
+                "count": len(groups),
+                "truncated": len(groups) == top,
+                "groupType": group_type,
+                "groups": groups,
+            }
+        )
+    except Exception as e:
+        return _error_response("list_identity_groups", e)
+
+
+def _directory_principal_summary(principal: Any) -> dict[str, Any]:
+    principal_type = type(principal).__name__.removesuffix("able")
+    return {
+        "id": principal.id,
+        "displayName": getattr(principal, "display_name", None),
+        "principalType": principal_type,
+        "userPrincipalName": getattr(principal, "user_principal_name", None),
+        "mail": getattr(principal, "mail", None),
+        "accountEnabled": getattr(principal, "account_enabled", None),
+    }
+
+
+def _authentication_method_summary(method: Any) -> dict[str, Any]:
+    method_type = type(method).__name__.removesuffix("able")
+    return {
+        "id": method.id,
+        "type": method_type,
+        "displayName": getattr(method, "display_name", None),
+        "createdDateTime": str(getattr(method, "created_date_time", None) or "") or None,
+        "model": getattr(method, "model", None),
+        "phoneType": str(getattr(method, "phone_type", None) or "") or None,
+        "keyStrength": str(getattr(method, "key_strength", None) or "") or None,
+    }
+
+
+def _identity_key(user_id: str | None, upn: str | None) -> str:
+    if bool(user_id) == bool(upn):
+        raise ValueError("Provide exactly one of user_id or upn")
+    return user_id or upn or ""
+
+
+def _directory_object_summary(value: Any) -> dict[str, Any]:
+    return {
+        "id": value.id,
+        "type": type(value).__name__.removesuffix("able"),
+        "displayName": getattr(value, "display_name", None),
+        "userPrincipalName": getattr(value, "user_principal_name", None),
+        "appId": getattr(value, "app_id", None),
+        "mail": getattr(value, "mail", None),
+    }
+
+
+def _role_assignment_summary(assignment: Any, state: str) -> dict[str, Any]:
+    definition = getattr(assignment, "role_definition", None)
+    return {
+        "id": assignment.id,
+        "assignmentState": state,
+        "roleDefinitionId": getattr(assignment, "role_definition_id", None),
+        "roleDisplayName": getattr(definition, "display_name", None),
+        "roleTemplateId": getattr(definition, "template_id", None),
+        "directoryScopeId": getattr(assignment, "directory_scope_id", None),
+        "memberType": str(getattr(assignment, "member_type", None) or "") or None,
+        "startDateTime": str(getattr(assignment, "start_date_time", None) or "") or None,
+        "endDateTime": str(getattr(assignment, "end_date_time", None) or "") or None,
+    }
+
+
+async def _fetch_user_directory_roles(
+    client: GraphServiceClient,
+    user_id: str,
+    top: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    from msgraph.generated.role_management.directory.role_assignments.role_assignments_request_builder import (
+        RoleAssignmentsRequestBuilder,
+    )
+    from msgraph.generated.role_management.directory.role_eligibility_schedule_instances.role_eligibility_schedule_instances_request_builder import (
+        RoleEligibilityScheduleInstancesRequestBuilder,
+    )
+
+    role_filter = f"principalId eq {quote_odata_string(user_id)}"
+    active_query = RoleAssignmentsRequestBuilder.RoleAssignmentsRequestBuilderGetQueryParameters(
+        filter=role_filter,
+        expand=["roleDefinition"],
+        top=top,
+    )
+    active_config = RoleAssignmentsRequestBuilder.RoleAssignmentsRequestBuilderGetRequestConfiguration(
+        query_parameters=active_query
+    )
+    eligible_query = RoleEligibilityScheduleInstancesRequestBuilder.RoleEligibilityScheduleInstancesRequestBuilderGetQueryParameters(
+        filter=role_filter,
+        expand=["roleDefinition"],
+        top=top,
+    )
+    eligible_config = RoleEligibilityScheduleInstancesRequestBuilder.RoleEligibilityScheduleInstancesRequestBuilderGetRequestConfiguration(
+        query_parameters=eligible_query
+    )
+    active_result, eligible_result = await asyncio.gather(
+        client.role_management.directory.role_assignments.get(
+            request_configuration=active_config
+        ),
+        client.role_management.directory.role_eligibility_schedule_instances.get(
+            request_configuration=eligible_config
+        ),
+    )
+    active = [
+        _role_assignment_summary(item, "active")
+        for item in (active_result.value if active_result and active_result.value else [])
+    ]
+    eligible = [
+        _role_assignment_summary(item, "eligible")
+        for item in (eligible_result.value if eligible_result and eligible_result.value else [])
+    ]
+    return active, eligible
+
+
+@read_only_tool()
+async def get_identity_context(
+    user_id: Annotated[
+        str | None,
+        Field(min_length=1, max_length=256, description="Microsoft Entra user object ID"),
+    ] = None,
+    upn: Annotated[
+        str | None,
+        Field(min_length=3, max_length=320, description="User principal name"),
+    ] = None,
+    top: ResultLimit200 = 100,
+) -> dict[str, Any]:
+    """Return consolidated user, organization, group, role, license, and ownership context."""
+    try:
+        identity_key = _identity_key(user_id, upn)
+    except ValueError as error:
+        return {"status": "error", "error": str(error), "error_code": "INVALID_IDENTITY_KEY"}
+
+    client = get_graph_client()
+    user_request = client.users.by_user_id(identity_key)
+    from msgraph.generated.users.item.user_item_request_builder import UserItemRequestBuilder
+
+    user_query = UserItemRequestBuilder.UserItemRequestBuilderGetQueryParameters(
+        select=[
+            "id",
+            "displayName",
+            "userPrincipalName",
+            "mail",
+            "accountEnabled",
+            "userType",
+            "jobTitle",
+            "department",
+            "companyName",
+            "officeLocation",
+            "employeeId",
+            "createdDateTime",
+        ]
+    )
+    user_config = UserItemRequestBuilder.UserItemRequestBuilderGetRequestConfiguration(
+        query_parameters=user_query
+    )
+    source_names = (
+        "profile",
+        "manager",
+        "direct_reports",
+        "groups",
+        "ownerships",
+        "licenses",
+        "app_roles",
+    )
+    calls = (
+        user_request.get(request_configuration=user_config),
+        user_request.manager.get(),
+        user_request.direct_reports.get(),
+        user_request.member_of.get(),
+        user_request.owned_objects.get(),
+        user_request.license_details.get(),
+        user_request.app_role_assignments.get(),
+    )
+    values = await asyncio.gather(*calls, return_exceptions=True)
+    results = dict(zip(source_names, values, strict=True))
+    errors = [
+        {"source": name, "error": "Source unavailable"}
+        for name, value in results.items()
+        if isinstance(value, Exception)
+    ]
+    profile = results["profile"]
+    if isinstance(profile, Exception):
+        logger.error("Identity profile lookup failed: %s", profile)
+        return {
+            "status": "error",
+            "error": "Identity profile unavailable",
+            "error_code": "IDENTITY_NOT_FOUND_OR_UNAUTHORIZED",
+        }
+
+    try:
+        active_roles, eligible_roles = await _fetch_user_directory_roles(
+            client, profile.id, min(top, 200)
+        )
+    except Exception as error:
+        logger.warning("Directory role context lookup failed: %s", error)
+        active_roles, eligible_roles = [], []
+        errors.append({"source": "directory_roles", "error": "Source unavailable"})
+
+    def collection(name: str) -> list[Any]:
+        value = results[name]
+        return [] if isinstance(value, Exception) or not value else value.value or []
+
+    manager = results["manager"]
+    license_details = collection("licenses")
+    app_role_assignments = collection("app_roles")
+    return {
+        "status": "success" if not errors else "partial_success",
+        "profile": {
+            "id": profile.id,
+            "displayName": profile.display_name,
+            "userPrincipalName": profile.user_principal_name,
+            "mail": profile.mail,
+            "accountEnabled": profile.account_enabled,
+            "userType": str(profile.user_type) if profile.user_type else None,
+            "jobTitle": profile.job_title,
+            "department": profile.department,
+            "companyName": profile.company_name,
+            "officeLocation": profile.office_location,
+            "employeeId": profile.employee_id,
+            "createdDateTime": str(profile.created_date_time)
+            if profile.created_date_time
+            else None,
+        },
+        "groups": [
+            _directory_object_summary(item)
+            for item in collection("groups")
+            if type(item).__name__.removesuffix("able") == "Group"
+        ],
+        "directory_roles": {
+            "active": active_roles,
+            "eligible": eligible_roles,
+        },
+        "app_roles": [
+            {
+                "id": item.id,
+                "appRoleId": item.app_role_id,
+                "resourceId": item.resource_id,
+                "resourceDisplayName": item.resource_display_name,
+                "createdDateTime": str(item.created_date_time)
+                if item.created_date_time
+                else None,
+            }
+            for item in app_role_assignments
+        ],
+        "licenses": [
+            {
+                "id": item.id,
+                "skuId": item.sku_id,
+                "skuPartNumber": item.sku_part_number,
+                "servicePlans": [
+                    {
+                        "servicePlanName": plan.service_plan_name,
+                        "provisioningStatus": str(plan.provisioning_status)
+                        if plan.provisioning_status
+                        else None,
+                    }
+                    for plan in (item.service_plans or [])
+                ],
+            }
+            for item in license_details
+        ],
+        "manager": None
+        if isinstance(manager, Exception) or manager is None
+        else _directory_object_summary(manager),
+        "direct_reports": [
+            _directory_object_summary(item) for item in collection("direct_reports")
+        ][:top],
+        "ownerships": [
+            _directory_object_summary(item) for item in collection("ownerships")
+        ][:top],
+        "errors": errors,
+    }
+
+
+@read_only_tool()
+async def get_authentication_posture(
+    user_id: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=320,
+            description="Microsoft Entra user object ID or user principal name",
+        ),
+    ],
+) -> dict[str, Any]:
+    """Assess registered authentication methods and passwordless readiness for one user."""
+    client = get_graph_client()
+    user_request = client.users.by_user_id(user_id)
+    methods_call = user_request.authentication.methods.get()
+    registration_call = client.reports.authentication_methods.user_registration_details.by_user_registration_details_id(
+        user_id
+    ).get()
+    methods_result, registration = await asyncio.gather(
+        methods_call,
+        registration_call,
+        return_exceptions=True,
+    )
+
+    errors: list[dict[str, str]] = []
+    methods: list[dict[str, Any]] = []
+    if isinstance(methods_result, Exception):
+        logger.warning("Authentication method lookup failed: %s", methods_result)
+        errors.append({"source": "authentication_methods", "error": "Methods unavailable"})
+    else:
+        methods = [
+            _authentication_method_summary(method)
+            for method in (
+                methods_result.value
+                if methods_result and methods_result.value
+                else []
+            )
+        ]
+
+    registration_available = not isinstance(registration, Exception)
+    if not registration_available:
+        logger.warning("Authentication registration report lookup failed: %s", registration)
+        errors.append(
+            {"source": "user_registration_details", "error": "Registration report unavailable"}
+        )
+        registration = None
+
+    method_types = {method["type"] for method in methods}
+    fido2_registered = "Fido2AuthenticationMethod" in method_types
+    whfb_enabled = "WindowsHelloForBusinessAuthenticationMethod" in method_types
+    methods_registered = [
+        str(value) for value in (getattr(registration, "methods_registered", None) or [])
+    ]
+    passwordless_capable = (
+        getattr(registration, "is_passwordless_capable", None)
+        if registration_available
+        else fido2_registered or whfb_enabled
+    )
+    return {
+        "status": "success" if not errors else "partial_success",
+        "user_id": getattr(registration, "id", None) or user_id,
+        "mfa_enabled": getattr(registration, "is_mfa_registered", None),
+        "mfa_capable": getattr(registration, "is_mfa_capable", None),
+        "authentication_methods": methods,
+        "methods_registered": methods_registered,
+        "fido2_registered": fido2_registered,
+        "passkeys_registered": fido2_registered,
+        "whfb_enabled": whfb_enabled,
+        "passwordless_status": {
+            "capable": passwordless_capable,
+            "systemPreferredEnabled": getattr(
+                registration, "is_system_preferred_authentication_method_enabled", None
+            ),
+            "defaultMfaMethod": str(
+                getattr(registration, "default_mfa_method", None) or ""
+            )
+            or None,
+        },
+        "assessment_basis": (
+            "mfa_enabled represents Entra MFA registration, not Conditional Access enforcement"
+        ),
+        "errors": errors,
+    }
+
+
+def _time_range_start(time_range: IdentityTimeRange) -> datetime:
+    delta = {
+        "1h": timedelta(hours=1),
+        "24h": timedelta(days=1),
+        "7d": timedelta(days=7),
+        "30d": timedelta(days=30),
+        "90d": timedelta(days=90),
+    }[time_range]
+    return datetime.now(UTC) - delta
+
+
+@read_only_tool()
+async def get_signin_activity(
+    user_id: Annotated[str, Field(min_length=1, max_length=256)],
+    time_range: IdentityTimeRange = "7d",
+    top: ResultLimit500 = 100,
+) -> dict[str, Any]:
+    """Return recent sign-ins and compact identity authentication aggregates."""
+    from msgraph.generated.audit_logs.sign_ins.sign_ins_request_builder import (
+        SignInsRequestBuilder,
+    )
+
+    start = _time_range_start(time_range).strftime("%Y-%m-%dT%H:%M:%SZ")
+    query = SignInsRequestBuilder.SignInsRequestBuilderGetQueryParameters(
+        filter=(
+            f"userId eq {quote_odata_string(user_id)} and createdDateTime ge {start}"
+        ),
+        orderby=["createdDateTime desc"],
+        top=min(top, 500),
+    )
+    config = SignInsRequestBuilder.SignInsRequestBuilderGetRequestConfiguration(
+        query_parameters=query
+    )
+    result = await get_graph_client().audit_logs.sign_ins.get(request_configuration=config)
+    signins = []
+    applications: set[str] = set()
+    devices: set[str] = set()
+    locations: set[str] = set()
+    ip_addresses: set[str] = set()
+    risk_indicators: list[dict[str, Any]] = []
+    for signin in (result.value if result and result.value else []):
+        location = signin.location
+        device = signin.device_detail
+        status = signin.status
+        location_name = ", ".join(
+            part
+            for part in (
+                getattr(location, "city", None),
+                getattr(location, "state", None),
+                getattr(location, "country_or_region", None),
+            )
+            if part
+        )
+        device_name = getattr(device, "display_name", None) or getattr(
+            device, "device_id", None
+        )
+        entry = {
+            "id": signin.id,
+            "createdDateTime": str(signin.created_date_time),
+            "appId": signin.app_id,
+            "appDisplayName": signin.app_display_name,
+            "ipAddress": signin.ip_address,
+            "location": location_name or None,
+            "device": {
+                "id": getattr(device, "device_id", None),
+                "displayName": getattr(device, "display_name", None),
+                "operatingSystem": getattr(device, "operating_system", None),
+                "isManaged": getattr(device, "is_managed", None),
+                "isCompliant": getattr(device, "is_compliant", None),
+            }
+            if device
+            else None,
+            "result": {
+                "errorCode": getattr(status, "error_code", None),
+                "failureReason": getattr(status, "failure_reason", None),
+            },
+            "riskLevel": str(signin.risk_level_during_sign_in)
+            if signin.risk_level_during_sign_in
+            else None,
+            "riskState": str(signin.risk_state) if signin.risk_state else None,
+            "conditionalAccessStatus": str(signin.conditional_access_status)
+            if signin.conditional_access_status
+            else None,
+        }
+        signins.append(entry)
+        if signin.app_display_name:
+            applications.add(signin.app_display_name)
+        if device_name:
+            devices.add(device_name)
+        if location_name:
+            locations.add(location_name)
+        if signin.ip_address:
+            ip_addresses.add(signin.ip_address)
+        if entry["riskLevel"] not in {None, "none", "unknownFutureValue"}:
+            risk_indicators.append(
+                {
+                    "signinId": signin.id,
+                    "riskLevel": entry["riskLevel"],
+                    "riskState": entry["riskState"],
+                }
+            )
+    return {
+        "status": "success",
+        "user_id": user_id,
+        "time_range": time_range,
+        "count": len(signins),
+        "truncated": len(signins) == min(top, 500),
+        "signins": signins,
+        "applications": sorted(applications),
+        "devices": sorted(devices),
+        "locations": sorted(locations),
+        "ip_addresses": sorted(ip_addresses),
+        "risk_indicators": risk_indicators,
+    }
+
+
+@read_only_tool()
+async def get_applied_conditional_access(
+    signin_id: Annotated[str, Field(min_length=1, max_length=256)],
+) -> dict[str, Any]:
+    """Return Conditional Access policies evaluated for one Entra sign-in."""
+    signin = await get_graph_client().audit_logs.sign_ins.by_sign_in_id(signin_id).get()
+    policies = [
+        {
+            "id": policy.id,
+            "displayName": policy.display_name,
+            "result": str(policy.result) if policy.result else None,
+            "enforcedGrantControls": policy.enforced_grant_controls or [],
+            "enforcedSessionControls": policy.enforced_session_controls or [],
+        }
+        for policy in (signin.applied_conditional_access_policies or [])
+    ]
+    return {
+        "status": "success",
+        "signin_id": signin.id,
+        "user_id": signin.user_id,
+        "conditional_access_status": str(signin.conditional_access_status)
+        if signin.conditional_access_status
+        else None,
+        "policies": policies,
+        "evaluation_results": [
+            {"policyId": policy["id"], "result": policy["result"]} for policy in policies
+        ],
+        "controls_applied": sorted(
+            {
+                control
+                for policy in policies
+                for control in (
+                    policy["enforcedGrantControls"] + policy["enforcedSessionControls"]
+                )
+            }
+        ),
+    }
+
+
+@read_only_tool()
+async def get_pim_eligibility(
+    user_id: Annotated[str, Field(min_length=1, max_length=256)],
+    top: ResultLimit200 = 100,
+) -> dict[str, Any]:
+    """Return active and eligible Entra directory-role assignments for one user."""
+    active, eligible = await _fetch_user_directory_roles(
+        get_graph_client(), user_id, min(top, 200)
+    )
+    return {
+        "status": "success",
+        "user_id": user_id,
+        "eligible_roles": eligible,
+        "active_roles": active,
+        "assignment_type": {
+            "active": len(active),
+            "eligible": len(eligible),
+        },
+        "expiration": [
+            {"role": item["roleDisplayName"], "endDateTime": item["endDateTime"]}
+            for item in [*active, *eligible]
+            if item["endDateTime"]
+        ],
+    }
+
+
+@read_only_tool()
+async def get_privileged_access(
+    user_id: Annotated[str, Field(min_length=1, max_length=256)],
+    top: ResultLimit200 = 100,
+) -> dict[str, Any]:
+    """List directory roles and role-assignable groups held by one identity."""
+    client = get_graph_client()
+    active, eligible = await _fetch_user_directory_roles(client, user_id, min(top, 200))
+    memberships = await client.users.by_user_id(user_id).transitive_member_of.get()
+    privileged_groups = [
+        _directory_object_summary(group)
+        for group in (memberships.value if memberships and memberships.value else [])
+        if type(group).__name__.removesuffix("able") == "Group"
+        and getattr(group, "is_assignable_to_role", False)
+    ][:top]
+    critical_terms = ("global", "privileged", "security", "authentication", "exchange")
+    critical_permissions = [
+        role
+        for role in [*active, *eligible]
+        if any(
+            term in str(role.get("roleDisplayName") or "").casefold()
+            for term in critical_terms
+        )
+    ]
+    return {
+        "status": "success",
+        "user_id": user_id,
+        "privileged_roles": {"active": active, "eligible": eligible},
+        "privileged_groups": privileged_groups,
+        "critical_permissions": critical_permissions,
+        "analysis_basis": "Name-based prioritization; verify custom role actions and scoped assignments",
+    }
+
+
+def _pim_activation_summary(request: Any) -> dict[str, Any]:
+    definition = getattr(request, "role_definition", None)
+    schedule = getattr(request, "schedule_info", None)
+    expiration = getattr(schedule, "expiration", None)
+    return {
+        "id": request.id,
+        "action": str(getattr(request, "action", None) or "") or None,
+        "status": str(getattr(request, "status", None) or "") or None,
+        "roleDefinitionId": getattr(request, "role_definition_id", None),
+        "roleDisplayName": getattr(definition, "display_name", None),
+        "directoryScopeId": getattr(request, "directory_scope_id", None),
+        "justification": getattr(request, "justification", None),
+        "createdDateTime": str(getattr(request, "created_date_time", None) or "") or None,
+        "activationDuration": str(getattr(expiration, "duration", None) or "") or None,
+        "expirationDateTime": str(getattr(expiration, "end_date_time", None) or "") or None,
+    }
+
+
+@read_only_tool()
+async def get_pim_activations(
+    user_id: Annotated[str, Field(min_length=1, max_length=256)],
+    time_range: IdentityTimeRange = "30d",
+    top: ResultLimit200 = 100,
+) -> dict[str, Any]:
+    """Return bounded PIM self-activation request history for one user."""
+    from msgraph.generated.role_management.directory.role_assignment_schedule_requests.role_assignment_schedule_requests_request_builder import (
+        RoleAssignmentScheduleRequestsRequestBuilder,
+    )
+
+    start = _time_range_start(time_range).strftime("%Y-%m-%dT%H:%M:%SZ")
+    query = RoleAssignmentScheduleRequestsRequestBuilder.RoleAssignmentScheduleRequestsRequestBuilderGetQueryParameters(
+        filter=(
+            f"principalId eq {quote_odata_string(user_id)} and action eq 'selfActivate' "
+            f"and createdDateTime ge {start}"
+        ),
+        expand=["roleDefinition"],
+        orderby=["createdDateTime desc"],
+        top=min(top, 200),
+    )
+    config = RoleAssignmentScheduleRequestsRequestBuilder.RoleAssignmentScheduleRequestsRequestBuilderGetRequestConfiguration(
+        query_parameters=query
+    )
+    result = await get_graph_client().role_management.directory.role_assignment_schedule_requests.get(
+        request_configuration=config
+    )
+    activations = [
+        _pim_activation_summary(item)
+        for item in (result.value if result and result.value else [])
+    ]
+    return {
+        "status": "success",
+        "user_id": user_id,
+        "time_range": time_range,
+        "count": len(activations),
+        "truncated": len(activations) == min(top, 200),
+        "activations": activations,
+        "activated_roles": sorted(
+            {item["roleDisplayName"] for item in activations if item["roleDisplayName"]}
+        ),
+    }
+
+
+_PRIVILEGED_ROLE_TERMS = (
+    "global administrator",
+    "privileged role",
+    "privileged authentication",
+    "security administrator",
+    "exchange administrator",
+    "application administrator",
+    "cloud application administrator",
+    "user administrator",
+    "conditional access",
+    "intune administrator",
+    "sharepoint administrator",
+    "helpdesk administrator",
+    "authentication administrator",
+    "hybrid identity",
+    "domain name administrator",
+    "partner tier2 support",
+)
+_WEAK_AUTH_METHOD_IDS = {"Sms", "Voice", "Email"}
+_HIGH_RISK_OAUTH_SCOPE_TERMS = (
+    "mail.read",
+    "mail.readwrite",
+    "mail.send",
+    "files.read",
+    "files.readwrite",
+    "mailboxsettings",
+    "offline_access",
+    "directory.read",
+    "directory.readwrite",
+    "user.read.all",
+    "full_access_as_user",
+)
+
+
+@read_only_tool()
+async def get_user_app_role_assignments(
+    user_id: Annotated[str, Field(min_length=1, max_length=256)],
+    top: ResultLimit200 = 100,
+) -> dict[str, Any]:
+    """List enterprise application (app role) assignments granted to one user."""
+    from msgraph.generated.users.item.app_role_assignments.app_role_assignments_request_builder import (
+        AppRoleAssignmentsRequestBuilder,
+    )
+
+    query = AppRoleAssignmentsRequestBuilder.AppRoleAssignmentsRequestBuilderGetQueryParameters(
+        top=min(top, 200)
+    )
+    config = AppRoleAssignmentsRequestBuilder.AppRoleAssignmentsRequestBuilderGetRequestConfiguration(
+        query_parameters=query
+    )
+    result = (
+        await get_graph_client()
+        .users.by_user_id(user_id)
+        .app_role_assignments.get(request_configuration=config)
+    )
+    assignments = [
+        {
+            "id": item.id,
+            "appRoleId": str(item.app_role_id) if item.app_role_id else None,
+            "principalId": item.principal_id,
+            "principalDisplayName": item.principal_display_name,
+            "resourceId": item.resource_id,
+            "resourceDisplayName": item.resource_display_name,
+            "createdDateTime": str(item.created_date_time) if item.created_date_time else None,
+        }
+        for item in (result.value if result and result.value else [])
+    ]
+    return {
+        "status": "success",
+        "user_id": user_id,
+        "count": len(assignments),
+        "truncated": len(assignments) == min(top, 200),
+        "resources": sorted(
+            {item["resourceDisplayName"] for item in assignments if item["resourceDisplayName"]}
+        ),
+        "app_role_assignments": assignments,
+    }
+
+
+@read_only_tool()
+async def list_privileged_role_assignments(
+    only_privileged: Annotated[
+        bool, Field(description="Filter to sensitive built-in directory roles")
+    ] = True,
+    top: ResultLimit500 = 200,
+) -> dict[str, Any]:
+    """Snapshot active directory-role assignments across the tenant with principals."""
+    from msgraph.generated.role_management.directory.role_assignments.role_assignments_request_builder import (
+        RoleAssignmentsRequestBuilder,
+    )
+
+    query = RoleAssignmentsRequestBuilder.RoleAssignmentsRequestBuilderGetQueryParameters(
+        expand=["principal", "roleDefinition"],
+        top=min(top, 500),
+    )
+    config = RoleAssignmentsRequestBuilder.RoleAssignmentsRequestBuilderGetRequestConfiguration(
+        query_parameters=query
+    )
+    result = await get_graph_client().role_management.directory.role_assignments.get(
+        request_configuration=config
+    )
+    raw = result.value if result and result.value else []
+    rows: list[dict[str, Any]] = []
+    for item in raw:
+        role_definition = getattr(item, "role_definition", None)
+        role_name = getattr(role_definition, "display_name", None)
+        if only_privileged and not any(
+            term in (role_name or "").casefold() for term in _PRIVILEGED_ROLE_TERMS
+        ):
+            continue
+        principal = getattr(item, "principal", None)
+        rows.append(
+            {
+                "assignmentId": item.id,
+                "roleDisplayName": role_name,
+                "roleTemplateId": getattr(role_definition, "template_id", None),
+                "directoryScopeId": getattr(item, "directory_scope_id", None),
+                "principalId": getattr(principal, "id", None),
+                "principalType": type(principal).__name__.removesuffix("able")
+                if principal
+                else None,
+                "principalDisplayName": getattr(principal, "display_name", None),
+                "principalUpn": getattr(principal, "user_principal_name", None),
+            }
+        )
+    by_role: dict[str, int] = {}
+    for row in rows:
+        key = row["roleDisplayName"] or "unknown"
+        by_role[key] = by_role.get(key, 0) + 1
+    return {
+        "status": "success",
+        "only_privileged": only_privileged,
+        "count": len(rows),
+        "scanned": len(raw),
+        "truncated": len(raw) == min(top, 500),
+        "assignments_by_role": by_role,
+        "assignments": rows,
+        "analysis_basis": "Privileged filter is a documented built-in-role name heuristic",
+    }
+
+
+@read_only_tool()
+async def get_authentication_methods_policy() -> dict[str, Any]:
+    """Report the tenant authentication methods policy and flag weak enabled methods."""
+    policy = await get_graph_client().policies.authentication_methods_policy.get()
+    configurations = []
+    weak_enabled = []
+    for configuration in getattr(policy, "authentication_method_configurations", None) or []:
+        state = str(getattr(configuration, "state", None) or "")
+        config_id = getattr(configuration, "id", None)
+        configurations.append({"id": config_id, "state": state})
+        if state.casefold() == "enabled" and config_id in _WEAK_AUTH_METHOD_IDS:
+            weak_enabled.append(config_id)
+    return {
+        "status": "success",
+        "policyId": getattr(policy, "id", None),
+        "displayName": getattr(policy, "display_name", None),
+        "method_configurations": configurations,
+        "weak_methods_enabled": weak_enabled,
+        "assessment_basis": "Weak = SMS, Voice, or Email enabled as authentication methods",
+    }
+
+
+@read_only_tool()
+async def find_user_oauth_grants(
+    user_id: Annotated[str, Field(min_length=1, max_length=256)],
+    top: ResultLimit200 = 100,
+) -> dict[str, Any]:
+    """List delegated OAuth2 permission grants for a user and flag high-risk scopes."""
+    from msgraph.generated.oauth2_permission_grants.oauth2_permission_grants_request_builder import (
+        Oauth2PermissionGrantsRequestBuilder,
+    )
+
+    query = Oauth2PermissionGrantsRequestBuilder.Oauth2PermissionGrantsRequestBuilderGetQueryParameters(
+        filter=f"principalId eq {quote_odata_string(user_id)}",
+        top=min(top, 200),
+    )
+    config = Oauth2PermissionGrantsRequestBuilder.Oauth2PermissionGrantsRequestBuilderGetRequestConfiguration(
+        query_parameters=query
+    )
+    result = await get_graph_client().oauth2_permission_grants.get(request_configuration=config)
+    grants = []
+    for grant in result.value if result and result.value else []:
+        scopes = [scope for scope in (grant.scope or "").split(" ") if scope]
+        risky = sorted(
+            {
+                scope
+                for scope in scopes
+                if any(term in scope.casefold() for term in _HIGH_RISK_OAUTH_SCOPE_TERMS)
+            }
+        )
+        grants.append(
+            {
+                "id": grant.id,
+                "clientId": grant.client_id,
+                "resourceId": grant.resource_id,
+                "consentType": str(grant.consent_type) if grant.consent_type else None,
+                "scopes": scopes,
+                "highRiskScopes": risky,
+            }
+        )
+    return {
+        "status": "success",
+        "user_id": user_id,
+        "count": len(grants),
+        "high_risk_count": sum(1 for grant in grants if grant["highRiskScopes"]),
+        "grants": grants,
+        "assessment_basis": "Delegated grants only; verify client application legitimacy",
+    }
+
+
+@read_only_tool()
+async def summarize_signin_failures(
+    user_principal_name: Annotated[
+        str | None, Field(description="Optional UPN prefix filter")
+    ] = None,
+    time_range: IdentityTimeRange = "24h",
+    top: ResultLimit500 = 500,
+) -> dict[str, Any]:
+    """Aggregate failed sign-ins by error code, user, and IP to surface spray/lockout."""
+    from msgraph.generated.audit_logs.sign_ins.sign_ins_request_builder import (
+        SignInsRequestBuilder,
+    )
+
+    start = _time_range_start(time_range).strftime("%Y-%m-%dT%H:%M:%SZ")
+    filters = [f"createdDateTime ge {start}", "status/errorCode ne 0"]
+    if user_principal_name:
+        filters.append(
+            f"startswith(userPrincipalName, {quote_odata_string(user_principal_name)})"
+        )
+    query = SignInsRequestBuilder.SignInsRequestBuilderGetQueryParameters(
+        filter=" and ".join(filters),
+        orderby=["createdDateTime desc"],
+        top=min(top, 500),
+    )
+    config = SignInsRequestBuilder.SignInsRequestBuilderGetRequestConfiguration(
+        query_parameters=query
+    )
+    result = await get_graph_client().audit_logs.sign_ins.get(request_configuration=config)
+    by_error: dict[str, dict[str, Any]] = {}
+    by_user: dict[str, int] = {}
+    by_ip: dict[str, int] = {}
+    scanned = 0
+    for signin in result.value if result and result.value else []:
+        scanned += 1
+        status = getattr(signin, "status", None)
+        code = getattr(status, "error_code", None)
+        key = str(code)
+        entry = by_error.setdefault(
+            key,
+            {
+                "errorCode": code,
+                "failureReason": getattr(status, "failure_reason", None),
+                "count": 0,
+            },
+        )
+        entry["count"] += 1
+        if signin.user_principal_name:
+            by_user[signin.user_principal_name] = by_user.get(signin.user_principal_name, 0) + 1
+        if signin.ip_address:
+            by_ip[signin.ip_address] = by_ip.get(signin.ip_address, 0) + 1
+
+    def top_counts(values: dict[str, int]) -> list[dict[str, Any]]:
+        return [
+            {"value": value, "count": count}
+            for value, count in sorted(values.items(), key=lambda item: item[1], reverse=True)[:15]
+        ]
+
+    return {
+        "status": "success",
+        "time_range": time_range,
+        "scanned": scanned,
+        "truncated": scanned == min(top, 500),
+        "by_error_code": sorted(
+            by_error.values(), key=lambda item: item["count"], reverse=True
+        ),
+        "top_targeted_users": top_counts(by_user),
+        "top_source_ips": top_counts(by_ip),
+        "possible_password_spray": len(by_user) >= 10 and scanned >= 20,
+        "assessment_basis": "Bounded to one Graph page; spray flag is a coarse heuristic",
+    }
+
+
+def _alert_identity_values(alert: Any) -> set[str]:
+    values: set[str] = set()
+    for state in getattr(alert, "user_states", None) or []:
+        for value in (
+            getattr(state, "aad_user_id", None),
+            getattr(state, "user_principal_name", None),
+            getattr(state, "account_name", None),
+        ):
+            if value:
+                values.add(str(value).casefold())
+    for evidence in getattr(alert, "evidence", None) or []:
+        account = getattr(evidence, "user_account", None)
+        for value in (
+            getattr(account, "azure_ad_user_id", None),
+            getattr(account, "user_principal_name", None),
+            getattr(account, "account_name", None),
+        ):
+            if value:
+                values.add(str(value).casefold())
+    return values
+
+
+@read_only_tool()
+async def get_identity_alerts(
+    user_id: Annotated[str, Field(min_length=1, max_length=320)],
+    top: ResultLimit100 = 50,
+) -> dict[str, Any]:
+    """Return Defender XDR alerts whose user evidence matches an identity ID or UPN."""
+    from msgraph.generated.security.alerts_v2.alerts_v2_request_builder import (
+        Alerts_v2RequestBuilder,
+    )
+
+    query = Alerts_v2RequestBuilder.Alerts_v2RequestBuilderGetQueryParameters(
+        expand=["evidence"],
+        top=min(top, 100),
+    )
+    config = Alerts_v2RequestBuilder.Alerts_v2RequestBuilderGetRequestConfiguration(
+        query_parameters=query
+    )
+    result = await get_graph_client().security.alerts_v2.get(request_configuration=config)
+    identity = user_id.casefold()
+    matched = [
+        alert
+        for alert in (result.value if result and result.value else [])
+        if identity in _alert_identity_values(alert)
+    ]
+    alerts = [
+        {
+            "id": alert.id,
+            "title": alert.title,
+            "severity": str(alert.severity) if alert.severity else None,
+            "status": str(alert.status) if alert.status else None,
+            "category": alert.category,
+            "attackStage": alert.category,
+            "createdDateTime": str(alert.created_date_time)
+            if alert.created_date_time
+            else None,
+            "serviceSource": str(alert.service_source) if alert.service_source else None,
+            "affectedAssets": [str(evidence) for evidence in (alert.evidence or [])][:20],
+        }
+        for alert in matched
+    ]
+    return {
+        "status": "success",
+        "user_id": user_id,
+        "count": len(alerts),
+        "alerts": alerts,
+        "severity": {
+            level: sum(
+                str(alert.get("severity") or "").casefold() == level for alert in alerts
+            )
+            for level in ("high", "medium", "low", "informational")
+        },
+        "attack_stage": sorted(
+            {alert["attackStage"] for alert in alerts if alert["attackStage"]}
+        ),
+        "affected_assets": [
+            asset for alert in alerts for asset in alert["affectedAssets"]
+        ][:100],
+        "scan_limit": min(top, 100),
+        "analysis_basis": "Client-side match against alert userStates and user evidence",
+    }
+
+
+@read_only_tool()
+async def analyze_signin_risk(
+    user_id: Annotated[str, Field(min_length=1, max_length=256)],
+    time_range: IdentityTimeRange = "30d",
+    top: ResultLimit500 = 100,
+) -> dict[str, Any]:
+    """Correlate recent sign-ins with Entra Identity Protection user risk."""
+    activity_call = get_signin_activity(user_id, time_range, top)
+    risky_user_call = get_graph_client().identity_protection.risky_users.by_risky_user_id(
+        user_id
+    ).get()
+    activity, risky_user = await asyncio.gather(
+        activity_call,
+        risky_user_call,
+        return_exceptions=True,
+    )
+    if isinstance(activity, Exception):
+        raise activity
+    errors: list[dict[str, str]] = []
+    if isinstance(risky_user, Exception):
+        logger.warning("Risky user lookup failed: %s", risky_user)
+        risky_user = None
+        errors.append({"source": "risky_user", "error": "Identity Protection unavailable"})
+
+    level = str(getattr(risky_user, "risk_level", None) or "none").casefold()
+    score = {"high": 60, "medium": 35, "low": 15}.get(level, 0)
+    signins = activity["signins"]
+    failed = sum(
+        int((signin.get("result") or {}).get("errorCode") or 0) != 0 for signin in signins
+    )
+    risky_signins = activity["risk_indicators"]
+    score += min(len(risky_signins) * 10, 30)
+    if signins:
+        score += min(round((failed / len(signins)) * 20), 20)
+    score = min(score, 100)
+    anomalies = []
+    if failed:
+        anomalies.append({"type": "failed_signins", "count": failed})
+    if len(activity["locations"]) >= 3:
+        anomalies.append(
+            {"type": "location_variance", "distinct_locations": len(activity["locations"])}
+        )
+    if risky_signins:
+        anomalies.append({"type": "risky_signins", "count": len(risky_signins)})
+    recommendations = []
+    if score >= 60:
+        recommendations.extend(
+            ["Review risky sign-ins immediately", "Require secure password reset and revoke sessions"]
+        )
+    elif score >= 30:
+        recommendations.extend(
+            ["Validate recent locations and devices", "Review authentication posture and MFA methods"]
+        )
+    elif failed:
+        recommendations.append("Review repeated authentication failures")
+    return {
+        "status": "success" if not errors else "partial_success",
+        "user_id": user_id,
+        "risk_level": "high" if score >= 60 else "medium" if score >= 30 else "low",
+        "risk_score": score,
+        "detections": risky_signins,
+        "anomalies": anomalies,
+        "recommendations": recommendations,
+        "identity_protection": {
+            "riskLevel": level,
+            "riskState": str(getattr(risky_user, "risk_state", None) or "") or None,
+            "riskDetail": str(getattr(risky_user, "risk_detail", None) or "") or None,
+            "lastUpdatedDateTime": str(
+                getattr(risky_user, "risk_last_updated_date_time", None) or ""
+            )
+            or None,
+        },
+        "metrics": {
+            "signins": len(signins),
+            "failed": failed,
+            "risky": len(risky_signins),
+            "locations": len(activity["locations"]),
+        },
+        "scoring_basis": "Identity Protection level + risky sign-ins + failed-sign-in ratio",
+        "errors": errors,
+    }
+
+
+@read_only_tool()
+async def analyze_identity_group(
+    group_id: Annotated[
+        str,
+        Field(min_length=1, max_length=256, description="Microsoft Entra group object ID"),
+    ],
+    membership_scope: Annotated[
+        GroupMembershipScope,
+        Field(description="direct members or transitive members including nested groups"),
+    ] = "direct",
+    top: ResultLimit500 = 100,
+) -> str:
+    """Analyze one Microsoft Entra group, its owners, and bounded membership."""
+    top = min(top, 500)
+    try:
+        client = get_graph_client()
+        group_request = client.groups.by_group_id(group_id)
+
+        from msgraph.generated.groups.item.group_item_request_builder import (
+            GroupItemRequestBuilder,
+        )
+        from msgraph.generated.groups.item.owners.owners_request_builder import (
+            OwnersRequestBuilder,
+        )
+
+        group_query = GroupItemRequestBuilder.GroupItemRequestBuilderGetQueryParameters(
+            select=[
+                "id",
+                "displayName",
+                "description",
+                "mail",
+                "mailEnabled",
+                "securityEnabled",
+                "groupTypes",
+                "membershipRule",
+                "membershipRuleProcessingState",
+                "isAssignableToRole",
+                "visibility",
+            ]
+        )
+        group_config = GroupItemRequestBuilder.GroupItemRequestBuilderGetRequestConfiguration(
+            query_parameters=group_query
+        )
+        owner_query = OwnersRequestBuilder.OwnersRequestBuilderGetQueryParameters(top=100)
+        owner_config = OwnersRequestBuilder.OwnersRequestBuilderGetRequestConfiguration(
+            query_parameters=owner_query
+        )
+        if membership_scope == "transitive":
+            from msgraph.generated.groups.item.transitive_members.transitive_members_request_builder import (
+                TransitiveMembersRequestBuilder,
+            )
+
+            member_query = TransitiveMembersRequestBuilder.TransitiveMembersRequestBuilderGetQueryParameters(
+                top=top
+            )
+            member_config = TransitiveMembersRequestBuilder.TransitiveMembersRequestBuilderGetRequestConfiguration(
+                query_parameters=member_query
+            )
+            member_call = group_request.transitive_members.get(
+                request_configuration=member_config
+            )
+        else:
+            from msgraph.generated.groups.item.members.members_request_builder import (
+                MembersRequestBuilder,
+            )
+
+            member_query = MembersRequestBuilder.MembersRequestBuilderGetQueryParameters(top=top)
+            member_config = MembersRequestBuilder.MembersRequestBuilderGetRequestConfiguration(
+                query_parameters=member_query
+            )
+            member_call = group_request.members.get(request_configuration=member_config)
+
+        group, owners_result, members_result = await asyncio.gather(
+            group_request.get(request_configuration=group_config),
+            group_request.owners.get(request_configuration=owner_config),
+            member_call,
+        )
+        owners = [
+            _directory_principal_summary(owner)
+            for owner in (owners_result.value if owners_result and owners_result.value else [])
+        ]
+        members = [
+            _directory_principal_summary(member)
+            for member in (members_result.value if members_result and members_result.value else [])
+        ]
+        member_types: dict[str, int] = {}
+        for member in members:
+            principal_type = member["principalType"]
+            member_types[principal_type] = member_types.get(principal_type, 0) + 1
+
+        return _json(
+            {
+                "status": "success",
+                "group": {
+                    "id": group.id,
+                    "displayName": group.display_name,
+                    "description": group.description,
+                    "mail": group.mail,
+                    "mailEnabled": group.mail_enabled,
+                    "securityEnabled": group.security_enabled,
+                    "groupTypes": group.group_types or [],
+                    "visibility": str(group.visibility) if group.visibility else None,
+                    "membershipType": "dynamic" if group.membership_rule else "assigned",
+                    "membershipRule": group.membership_rule,
+                    "membershipRuleProcessingState": str(group.membership_rule_processing_state)
+                    if group.membership_rule_processing_state
+                    else None,
+                    "isAssignableToRole": group.is_assignable_to_role,
+                },
+                "membershipScope": membership_scope,
+                "ownerCount": len(owners),
+                "owners": owners,
+                "returnedMemberCount": len(members),
+                "memberTypes": member_types,
+                "truncated": len(members) == top,
+                "members": members,
+            }
+        )
+    except Exception as e:
+        return _error_response("analyze_identity_group", e)
+
+
 @read_only_tool()
 async def get_signin_logs(
     user_principal_name: Annotated[
@@ -1736,28 +3242,36 @@ async def analyze_user_risk_profile(
 # TOOLS — Advanced Threat Hunting
 # =========================================================================
 
+# Bounded fan-out for Advanced Hunting sub-queries. Kept modest so nested use
+# inside run_threat_hunt_suite stays within Defender Advanced Hunting throttles.
+_HUNT_QUERY_CONCURRENCY = 4
+
 
 async def _multi_hunt(queries: dict[str, str]) -> dict[str, dict[str, Any]]:
-    """Run hunting queries and preserve the outcome of each query."""
-    out: dict[str, dict[str, Any]] = {}
-    for key, q in queries.items():
-        try:
-            r = await _run_hunting(q)
-            results = r.get("results", [])
-            out[key] = {
-                "status": "success",
-                "row_count": r.get("rowCount", len(results)),
-                "results": results,
-            }
-        except Exception as e:
-            logger.warning("Hunt query '%s' failed: %s", key, e)
-            out[key] = {
-                "status": "error",
-                "row_count": 0,
-                "results": [],
-                "error": "Query execution failed",
-            }
-    return out
+    """Run hunting queries with bounded concurrency and preserve each outcome."""
+    semaphore = asyncio.Semaphore(_HUNT_QUERY_CONCURRENCY)
+
+    async def run_one(key: str, query: str) -> tuple[str, dict[str, Any]]:
+        async with semaphore:
+            try:
+                r = await _run_hunting(query)
+                results = r.get("results", [])
+                return key, {
+                    "status": "success",
+                    "row_count": r.get("rowCount", len(results)),
+                    "results": results,
+                }
+            except Exception as e:
+                logger.warning("Hunt query '%s' failed: %s", key, e)
+                return key, {
+                    "status": "error",
+                    "row_count": 0,
+                    "results": [],
+                    "error": "Query execution failed",
+                }
+
+    entries = await asyncio.gather(*(run_one(key, q) for key, q in queries.items()))
+    return dict(entries)
 
 
 def _count_hunt_findings(results: dict[str, dict[str, Any]]) -> int:
@@ -2381,6 +3895,115 @@ async def investigate_user(
 
 
 @read_only_tool()
+async def investigate_identity(
+    user_id: Annotated[str, Field(min_length=1, max_length=256)],
+    time_range: IdentityTimeRange = "30d",
+    detail_level: DetailLevel = "standard",
+    max_evidence: MaxEvidence = 10,
+) -> dict[str, Any]:
+    """Investigate identity context, authentication, risk, alerts, and privileges."""
+    result = await run_workflow(
+        {
+            "identity_context": lambda: get_identity_context(
+                user_id=user_id, top=min(max_evidence, 50)
+            ),
+            "authentication_posture": lambda: get_authentication_posture(user_id),
+            "signin_risk": lambda: analyze_signin_risk(
+                user_id, time_range, min(max_evidence, 500)
+            ),
+            "identity_alerts": lambda: get_identity_alerts(
+                user_id, min(max_evidence, 100)
+            ),
+            "privileged_access": lambda: get_privileged_access(
+                user_id, min(max_evidence, 200)
+            ),
+        },
+        max_concurrency=4,
+        max_items=_workflow_evidence_limit(detail_level, max_evidence),
+    )
+    return {
+        "contract_version": "1.0.0",
+        "workflow": "investigate_identity",
+        "user_id": user_id,
+        "time_range": time_range,
+        "detail_level": detail_level,
+        **result,
+    }
+
+
+@read_only_tool()
+async def recommend_next_investigation_steps(
+    investigation_context: Annotated[
+        dict[str, Any],
+        Field(description="Current structured investigation findings and completed steps"),
+    ],
+) -> dict[str, Any]:
+    """Recommend evidence-gathering tools from structured investigation findings."""
+    context_text = json.dumps(investigation_context, default=str).casefold()
+    recommendations: list[dict[str, Any]] = []
+
+    def add(tool: str, reason: str, confidence: float) -> None:
+        if not any(item["tool"] == tool for item in recommendations):
+            recommendations.append(
+                {"tool": tool, "reasoning": reason, "confidence": confidence}
+            )
+
+    if not investigation_context.get("profile") and "identity_context" not in context_text:
+        add(
+            "get_identity_context",
+            "Identity profile and organizational relationships are not present",
+            0.95,
+        )
+    if any(term in context_text for term in ("high", "atrisk", "risky_signins")):
+        add(
+            "get_authentication_posture",
+            "Elevated identity or sign-in risk requires authentication-method review",
+            0.9,
+        )
+        add(
+            "get_signin_activity",
+            "Review recent applications, devices, locations, and failures behind the risk signal",
+            0.9,
+        )
+    if any(term in context_text for term in ("privileged", "global administrator", "role")):
+        add(
+            "get_privileged_access",
+            "Privileged relationships require active, eligible, and group-derived access review",
+            0.88,
+        )
+        add(
+            "get_pim_activations",
+            "Review recent privilege activations and their justification",
+            0.82,
+        )
+    if any(term in context_text for term in ("alert", "incident", "compromised")):
+        add(
+            "get_identity_alerts",
+            "Correlate the identity with Defender XDR user evidence",
+            0.9,
+        )
+    if any(term in context_text for term in ("conditionalaccess", "conditional_access")):
+        add(
+            "get_applied_conditional_access",
+            "Inspect the actual policy evaluation for a relevant sign-in ID",
+            0.85,
+        )
+    if not recommendations:
+        add(
+            "investigate_identity",
+            "No decisive signal is present; run the bounded identity investigation workflow",
+            0.75,
+        )
+    return {
+        "status": "success",
+        "recommended_tools": [item["tool"] for item in recommendations],
+        "recommendations": recommendations,
+        "reasoning": "Deterministic routing based on supplied evidence keywords and missing sections",
+        "confidence": max(item["confidence"] for item in recommendations),
+    }
+
+
+@read_only_tool()
 async def investigate_alert(
     alert_id: Annotated[str, Field(min_length=1, max_length=256)],
     time_range: Literal["1h", "24h", "7d", "30d"] = "24h",
@@ -2558,6 +4181,149 @@ async def analyze_agent_permissions(
             "capability_status": "beta",
             "agent_id": agent_id,
             **analyze_permission_assignments(assignments[:max_assignments]),
+        }
+    except AgentGovernanceUnavailable:
+        return {
+            "status": "unavailable",
+            "contract_version": "1.0.0-beta.1",
+            "capability_status": "beta",
+            "error": "Agent governance beta is unavailable",
+        }
+    finally:
+        await client.close()
+
+
+def _agent_risk_assessment(
+    profile: dict[str, Any], assignments: list[dict[str, Any]]
+) -> dict[str, Any]:
+    permission_analysis = analyze_permission_assignments(assignments)
+    high_priority = permission_analysis["high_priority_count"]
+    assignment_count = permission_analysis["assignment_count"]
+    score = min(high_priority * 25 + assignment_count * 5, 100)
+    findings = []
+    if high_priority:
+        findings.append(
+            {
+                "type": "high_priority_assignments",
+                "count": high_priority,
+                "severity": "high",
+            }
+        )
+    if assignment_count >= 10:
+        findings.append(
+            {
+                "type": "broad_assignment_surface",
+                "count": assignment_count,
+                "severity": "medium",
+            }
+        )
+    if profile.get("enabled") and not profile.get("app_role_assignment_required"):
+        score = min(score + 10, 100)
+        findings.append(
+            {
+                "type": "app_role_assignment_not_required",
+                "severity": "medium",
+            }
+        )
+    recommendations = []
+    if high_priority:
+        recommendations.append("Resolve and review high-priority app role definitions")
+    if assignment_count >= 10:
+        recommendations.append("Remove unused assignments after activity validation")
+    if not recommendations:
+        recommendations.append("Continue periodic owner, sponsor, and assignment review")
+    return {
+        "risk_score": score,
+        "risk_level": "high" if score >= 70 else "medium" if score >= 35 else "low",
+        "findings": findings,
+        "recommendations": recommendations,
+        "permission_analysis": permission_analysis,
+        "analysis_basis": (
+            "Heuristic assignment review; owner, sponsor, activity, and resolved permission values "
+            "are not available in this beta adapter"
+        ),
+    }
+
+
+@read_only_tool()
+async def evaluate_agent_risk(
+    agent_id: Annotated[str, Field(min_length=1, max_length=256)],
+    max_assignments: ResultLimit100 = 100,
+) -> dict[str, Any]:
+    """Evaluate beta Agent Identity assignment risk using bounded explainable heuristics."""
+    client = await _agent_governance_client()
+    try:
+        profile, assignments = await asyncio.gather(
+            client.get_agent_identity(agent_id),
+            client.list_agent_app_roles(agent_id),
+        )
+        return {
+            "status": "success",
+            "contract_version": "1.0.0-beta.1",
+            "capability_status": "beta",
+            "agent": profile,
+            **_agent_risk_assessment(profile, assignments[:max_assignments]),
+        }
+    except AgentGovernanceUnavailable:
+        return {
+            "status": "unavailable",
+            "contract_version": "1.0.0-beta.1",
+            "capability_status": "beta",
+            "error": "Agent governance beta is unavailable",
+        }
+    finally:
+        await client.close()
+
+
+@read_only_tool()
+async def list_agents_with_excessive_permissions(
+    top: ResultLimit100 = 50,
+    risk_threshold: Annotated[int, Field(ge=0, le=100)] = 35,
+    max_concurrency: WorkflowConcurrency = 4,
+) -> dict[str, Any]:
+    """List beta Agent Identities whose heuristic permission risk meets a threshold."""
+    client = await _agent_governance_client()
+    try:
+        agents = await client.list_agent_identities(top)
+        semaphore = asyncio.Semaphore(max_concurrency)
+
+        async def assess(agent: dict[str, Any]) -> dict[str, Any]:
+            async with semaphore:
+                assignments = await client.list_agent_app_roles(str(agent["id"]))
+            return {
+                "agent": agent,
+                **_agent_risk_assessment(agent, assignments[:100]),
+            }
+
+        assessments = await asyncio.gather(*(assess(agent) for agent in agents))
+        excessive = [
+            assessment
+            for assessment in assessments
+            if assessment["risk_score"] >= risk_threshold
+        ]
+        excessive.sort(key=lambda item: item["risk_score"], reverse=True)
+        return {
+            "status": "success",
+            "contract_version": "1.0.0-beta.1",
+            "capability_status": "beta",
+            "scanned": len(agents),
+            "count": len(excessive),
+            "risk_threshold": risk_threshold,
+            "agents": excessive,
+            "excessive_permissions": [
+                {
+                    "agent_id": item["agent"]["id"],
+                    "findings": item["findings"],
+                }
+                for item in excessive
+            ],
+            "recommendations": sorted(
+                {
+                    recommendation
+                    for item in excessive
+                    for recommendation in item["recommendations"]
+                }
+            ),
         }
     except AgentGovernanceUnavailable:
         return {

@@ -62,9 +62,23 @@ Baseline families include:
 - `AuditLog.Read.All` for sign-ins and directory audit logs;
 - `IdentityRiskyUser.Read.All` for identity risk;
 - `Policy.Read.All` for Conditional Access;
+- `RoleManagement.Read.Directory` for active directory-role assignments;
+- `RoleEligibilitySchedule.Read.Directory` for PIM eligibility reads;
+- `Group.Read.All` for group inventory and full group properties;
+- `GroupMember.Read.All` for owners and direct/transitive membership;
+- `Member.Read.Hidden` only when hidden-membership groups must be analyzed;
+- `User.Read.All` for user profiles and organizational relationships;
+- `LicenseAssignment.Read.All` for license details where a broader approved permission is absent;
+- `UserAuthenticationMethod.Read.All` for another user's authentication methods;
+- `RoleAssignmentSchedule.Read.Directory` for PIM activation history;
+- `SecurityAlert.Read.All` for Defender XDR identity-alert correlation;
+- `Application.Read.All` for app-role resource resolution and OAuth grant review;
+- `DelegatedPermissionGrant.Read.All` for delegated OAuth2 permission grants;
 - directory/application read permissions for agent-governance role analysis, subject to tenant approval and beta API requirements.
 
 MCP application roles are assigned to each autonomous Agent Identity service principal. Graph application roles required by MCP tools are assigned to the runtime Managed Identity through `deploy-full.ps1`.
+
+For delegated OBO calls, Graph evaluates both the application's delegated consent and the signed-in user's Entra privileges. Directory-role reads support Directory Readers, Global Reader, or Privileged Role Administrator for active assignments; PIM eligibility and group reads have their own supported-role requirements. A token containing the MCP app role `Mcp.Invoke` does not grant Microsoft Graph directory-role visibility.
 
 ## Public endpoints and health
 

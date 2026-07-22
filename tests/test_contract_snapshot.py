@@ -10,5 +10,5 @@ def test_committed_contract_snapshot_matches_runtime() -> None:
     runtime = asyncio.run(build_contract_snapshot())
 
     assert committed == runtime
-    assert len(runtime["tools"]) == 38
+    assert len(runtime["tools"]) == 59
     assert len(runtime["resources"]) == 8

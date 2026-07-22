@@ -1,6 +1,8 @@
+import itertools
 import os
 from contextvars import ContextVar
 from pathlib import Path
+from typing import Any
 
 from azure.identity.aio import ManagedIdentityCredential, OnBehalfOfCredential
 from msgraph import GraphServiceClient
@@ -12,6 +14,11 @@ _request_credentials: ContextVar[tuple[OnBehalfOfCredential, ...]] = ContextVar(
     "defender_hunt_obo_credentials",
     default=(),
 )
+_request_obo_client: ContextVar[tuple[Any, GraphServiceClient] | None] = ContextVar(
+    "defender_hunt_obo_client",
+    default=None,
+)
+_factory_token_counter = itertools.count()
 
 
 class GraphClientFactory:
@@ -33,6 +40,7 @@ class GraphClientFactory:
         self._managed_identity_client_id = managed_identity_client_id
         self._managed_credential: ManagedIdentityCredential | None = None
         self._managed_client: GraphServiceClient | None = None
+        self._cache_token = next(_factory_token_counter)
 
     @classmethod
     def from_environment(cls) -> "GraphClientFactory":
@@ -64,8 +72,20 @@ class GraphClientFactory:
         return token.token
 
     def _get_obo_client(self, identity: RequestIdentity) -> GraphServiceClient:
+        key = (
+            self._cache_token,
+            identity.actor_type,
+            identity.subject_id,
+            identity.client_id,
+            identity.user_assertion,
+        )
+        cached = _request_obo_client.get()
+        if cached is not None and cached[0] == key:
+            return cached[1]
         credential = self._create_obo_credential(identity)
-        return GraphServiceClient(credentials=credential, scopes=GRAPH_SCOPES)
+        client = GraphServiceClient(credentials=credential, scopes=GRAPH_SCOPES)
+        _request_obo_client.set((key, client))
+        return client
 
     def _create_obo_credential(self, identity: RequestIdentity) -> OnBehalfOfCredential:
         if not identity.user_assertion:
@@ -105,6 +125,7 @@ class GraphClientFactory:
 
 
 async def close_request_credentials() -> None:
+    _request_obo_client.set(None)
     credentials = _request_credentials.get()
     _request_credentials.set(())
     for credential in credentials:

@@ -98,6 +98,63 @@
         "openWorldHint": true,
         "readOnlyHint": true
       },
+      "description": "Analyze one Microsoft Entra group, its owners, and bounded membership.",
+      "input_schema": {
+        "properties": {
+          "group_id": {
+            "description": "Microsoft Entra group object ID",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Group Id",
+            "type": "string"
+          },
+          "membership_scope": {
+            "default": "direct",
+            "description": "direct members or transitive members including nested groups",
+            "enum": [
+              "direct",
+              "transitive"
+            ],
+            "title": "Membership Scope",
+            "type": "string"
+          },
+          "top": {
+            "default": 100,
+            "description": "Maximum results (1-500)",
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "group_id"
+        ],
+        "title": "analyze_identity_groupArguments",
+        "type": "object"
+      },
+      "name": "analyze_identity_group",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "analyze_identity_groupOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
       "description": "Analyse overall security posture with actionable insights.",
       "input_schema": {
         "properties": {
@@ -123,6 +180,56 @@
           "result"
         ],
         "title": "analyze_security_postureOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Correlate recent sign-ins with Entra Identity Protection user risk.",
+      "input_schema": {
+        "properties": {
+          "time_range": {
+            "default": "30d",
+            "enum": [
+              "1h",
+              "24h",
+              "7d",
+              "30d",
+              "90d"
+            ],
+            "title": "Time Range",
+            "type": "string"
+          },
+          "top": {
+            "default": 100,
+            "description": "Maximum results (1-500)",
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          },
+          "user_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "analyze_signin_riskArguments",
+        "type": "object"
+      },
+      "name": "analyze_signin_risk",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "analyze_signin_riskDictOutput",
         "type": "object"
       }
     },
@@ -211,6 +318,82 @@
           "result"
         ],
         "title": "enrich_iocOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Evaluate beta Agent Identity assignment risk using bounded explainable heuristics.",
+      "input_schema": {
+        "properties": {
+          "agent_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "max_assignments": {
+            "default": 100,
+            "description": "Maximum results (1-100)",
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Max Assignments",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_id"
+        ],
+        "title": "evaluate_agent_riskArguments",
+        "type": "object"
+      },
+      "name": "evaluate_agent_risk",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "evaluate_agent_riskDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "List delegated OAuth2 permission grants for a user and flag high-risk scopes.",
+      "input_schema": {
+        "properties": {
+          "top": {
+            "default": 100,
+            "description": "Maximum results (1-200)",
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          },
+          "user_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "find_user_oauth_grantsArguments",
+        "type": "object"
+      },
+      "name": "find_user_oauth_grants",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "find_user_oauth_grantsDictOutput",
         "type": "object"
       }
     },
@@ -321,6 +504,36 @@
           "result"
         ],
         "title": "get_alert_statisticsOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Return Conditional Access policies evaluated for one Entra sign-in.",
+      "input_schema": {
+        "properties": {
+          "signin_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Signin Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "signin_id"
+        ],
+        "title": "get_applied_conditional_accessArguments",
+        "type": "object"
+      },
+      "name": "get_applied_conditional_access",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "get_applied_conditional_accessDictOutput",
         "type": "object"
       }
     },
@@ -464,6 +677,57 @@
         "openWorldHint": true,
         "readOnlyHint": true
       },
+      "description": "Report the tenant authentication methods policy and flag weak enabled methods.",
+      "input_schema": {
+        "properties": {},
+        "title": "get_authentication_methods_policyArguments",
+        "type": "object"
+      },
+      "name": "get_authentication_methods_policy",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "get_authentication_methods_policyDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Assess registered authentication methods and passwordless readiness for one user.",
+      "input_schema": {
+        "properties": {
+          "user_id": {
+            "description": "Microsoft Entra user object ID or user principal name",
+            "maxLength": 320,
+            "minLength": 1,
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "get_authentication_postureArguments",
+        "type": "object"
+      },
+      "name": "get_authentication_posture",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "get_authentication_postureDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
       "description": "Retrieve Conditional Access policies and their configurations.",
       "input_schema": {
         "properties": {
@@ -567,6 +831,229 @@
           "result"
         ],
         "title": "get_environment_dashboardOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Return Defender XDR alerts whose user evidence matches an identity ID or UPN.",
+      "input_schema": {
+        "properties": {
+          "top": {
+            "default": 50,
+            "description": "Maximum results (1-100)",
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          },
+          "user_id": {
+            "maxLength": 320,
+            "minLength": 1,
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "get_identity_alertsArguments",
+        "type": "object"
+      },
+      "name": "get_identity_alerts",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "get_identity_alertsDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Return consolidated user, organization, group, role, license, and ownership context.",
+      "input_schema": {
+        "properties": {
+          "top": {
+            "default": 100,
+            "description": "Maximum results (1-200)",
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          },
+          "upn": {
+            "anyOf": [
+              {
+                "maxLength": 320,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "User principal name",
+            "title": "Upn"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Microsoft Entra user object ID",
+            "title": "User Id"
+          }
+        },
+        "title": "get_identity_contextArguments",
+        "type": "object"
+      },
+      "name": "get_identity_context",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "get_identity_contextDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Return bounded PIM self-activation request history for one user.",
+      "input_schema": {
+        "properties": {
+          "time_range": {
+            "default": "30d",
+            "enum": [
+              "1h",
+              "24h",
+              "7d",
+              "30d",
+              "90d"
+            ],
+            "title": "Time Range",
+            "type": "string"
+          },
+          "top": {
+            "default": 100,
+            "description": "Maximum results (1-200)",
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          },
+          "user_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "get_pim_activationsArguments",
+        "type": "object"
+      },
+      "name": "get_pim_activations",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "get_pim_activationsDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Return active and eligible Entra directory-role assignments for one user.",
+      "input_schema": {
+        "properties": {
+          "top": {
+            "default": 100,
+            "description": "Maximum results (1-200)",
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          },
+          "user_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "get_pim_eligibilityArguments",
+        "type": "object"
+      },
+      "name": "get_pim_eligibility",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "get_pim_eligibilityDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "List directory roles and role-assignable groups held by one identity.",
+      "input_schema": {
+        "properties": {
+          "top": {
+            "default": 100,
+            "description": "Maximum results (1-200)",
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          },
+          "user_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "get_privileged_accessArguments",
+        "type": "object"
+      },
+      "name": "get_privileged_access",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "get_privileged_accessDictOutput",
         "type": "object"
       }
     },
@@ -850,6 +1337,56 @@
         "openWorldHint": true,
         "readOnlyHint": true
       },
+      "description": "Return recent sign-ins and compact identity authentication aggregates.",
+      "input_schema": {
+        "properties": {
+          "time_range": {
+            "default": "7d",
+            "enum": [
+              "1h",
+              "24h",
+              "7d",
+              "30d",
+              "90d"
+            ],
+            "title": "Time Range",
+            "type": "string"
+          },
+          "top": {
+            "default": 100,
+            "description": "Maximum results (1-500)",
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          },
+          "user_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "get_signin_activityArguments",
+        "type": "object"
+      },
+      "name": "get_signin_activity",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "get_signin_activityDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
       "description": "Retrieve Microsoft Entra ID sign-in logs.",
       "input_schema": {
         "properties": {
@@ -972,6 +1509,108 @@
           "result"
         ],
         "title": "get_threat_indicatorsOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "List enterprise application (app role) assignments granted to one user.",
+      "input_schema": {
+        "properties": {
+          "top": {
+            "default": 100,
+            "description": "Maximum results (1-200)",
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          },
+          "user_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "get_user_app_role_assignmentsArguments",
+        "type": "object"
+      },
+      "name": "get_user_app_role_assignments",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "get_user_app_role_assignmentsDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "List principals assigned or eligible for a Microsoft Entra directory role.",
+      "input_schema": {
+        "properties": {
+          "assignment_state": {
+            "default": "active",
+            "description": "active|eligible|all; eligible includes PIM eligibility",
+            "enum": [
+              "active",
+              "eligible",
+              "all"
+            ],
+            "title": "Assignment State",
+            "type": "string"
+          },
+          "expand_group_members": {
+            "default": true,
+            "description": "Resolve users inherited through role-assignable groups",
+            "title": "Expand Group Members",
+            "type": "boolean"
+          },
+          "role": {
+            "description": "Exact directory role display name or template ID, for example Global Administrator",
+            "maxLength": 256,
+            "minLength": 2,
+            "title": "Role",
+            "type": "string"
+          },
+          "top": {
+            "default": 100,
+            "description": "Maximum results (1-200)",
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "role"
+        ],
+        "title": "get_users_by_directory_roleArguments",
+        "type": "object"
+      },
+      "name": "get_users_by_directory_role",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "get_users_by_directory_roleOutput",
         "type": "object"
       }
     },
@@ -1635,6 +2274,66 @@
         "openWorldHint": true,
         "readOnlyHint": true
       },
+      "description": "Investigate identity context, authentication, risk, alerts, and privileges.",
+      "input_schema": {
+        "properties": {
+          "detail_level": {
+            "default": "standard",
+            "enum": [
+              "summary",
+              "standard",
+              "evidence"
+            ],
+            "title": "Detail Level",
+            "type": "string"
+          },
+          "max_evidence": {
+            "default": 10,
+            "description": "Maximum evidence items (1-50)",
+            "maximum": 50,
+            "minimum": 1,
+            "title": "Max Evidence",
+            "type": "integer"
+          },
+          "time_range": {
+            "default": "30d",
+            "enum": [
+              "1h",
+              "24h",
+              "7d",
+              "30d",
+              "90d"
+            ],
+            "title": "Time Range",
+            "type": "string"
+          },
+          "user_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "investigate_identityArguments",
+        "type": "object"
+      },
+      "name": "investigate_identity",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "investigate_identityDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
       "description": "Investigate one user's sign-ins, risky sign-ins, and directory audit activity.",
       "input_schema": {
         "properties": {
@@ -1755,6 +2454,179 @@
       "output_schema": {
         "additionalProperties": true,
         "title": "list_agent_identitiesDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "List beta Agent Identities whose heuristic permission risk meets a threshold.",
+      "input_schema": {
+        "properties": {
+          "max_concurrency": {
+            "default": 4,
+            "description": "Concurrent steps (1-8)",
+            "maximum": 8,
+            "minimum": 1,
+            "title": "Max Concurrency",
+            "type": "integer"
+          },
+          "risk_threshold": {
+            "default": 35,
+            "maximum": 100,
+            "minimum": 0,
+            "title": "Risk Threshold",
+            "type": "integer"
+          },
+          "top": {
+            "default": 50,
+            "description": "Maximum results (1-100)",
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          }
+        },
+        "title": "list_agents_with_excessive_permissionsArguments",
+        "type": "object"
+      },
+      "name": "list_agents_with_excessive_permissions",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "list_agents_with_excessive_permissionsDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "List Microsoft Entra groups for identity and access analysis.",
+      "input_schema": {
+        "properties": {
+          "display_name_prefix": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional case-insensitive display name prefix",
+            "title": "Display Name Prefix"
+          },
+          "group_type": {
+            "default": "all",
+            "description": "all|security|microsoft365|role_assignable",
+            "enum": [
+              "all",
+              "security",
+              "microsoft365",
+              "role_assignable"
+            ],
+            "title": "Group Type",
+            "type": "string"
+          },
+          "top": {
+            "default": 100,
+            "description": "Maximum results (1-200)",
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          }
+        },
+        "title": "list_identity_groupsArguments",
+        "type": "object"
+      },
+      "name": "list_identity_groups",
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "list_identity_groupsOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Snapshot active directory-role assignments across the tenant with principals.",
+      "input_schema": {
+        "properties": {
+          "only_privileged": {
+            "default": true,
+            "description": "Filter to sensitive built-in directory roles",
+            "title": "Only Privileged",
+            "type": "boolean"
+          },
+          "top": {
+            "default": 200,
+            "description": "Maximum results (1-500)",
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          }
+        },
+        "title": "list_privileged_role_assignmentsArguments",
+        "type": "object"
+      },
+      "name": "list_privileged_role_assignments",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "list_privileged_role_assignmentsDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Recommend evidence-gathering tools from structured investigation findings.",
+      "input_schema": {
+        "properties": {
+          "investigation_context": {
+            "additionalProperties": true,
+            "description": "Current structured investigation findings and completed steps",
+            "title": "Investigation Context",
+            "type": "object"
+          }
+        },
+        "required": [
+          "investigation_context"
+        ],
+        "title": "recommend_next_investigation_stepsArguments",
+        "type": "object"
+      },
+      "name": "recommend_next_investigation_steps",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "recommend_next_investigation_stepsDictOutput",
         "type": "object"
       }
     },
@@ -1886,6 +2758,60 @@
       "output_schema": {
         "additionalProperties": true,
         "title": "run_threat_hunt_suiteDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Aggregate failed sign-ins by error code, user, and IP to surface spray/lockout.",
+      "input_schema": {
+        "properties": {
+          "time_range": {
+            "default": "24h",
+            "enum": [
+              "1h",
+              "24h",
+              "7d",
+              "30d",
+              "90d"
+            ],
+            "title": "Time Range",
+            "type": "string"
+          },
+          "top": {
+            "default": 500,
+            "description": "Maximum results (1-500)",
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Top",
+            "type": "integer"
+          },
+          "user_principal_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional UPN prefix filter",
+            "title": "User Principal Name"
+          }
+        },
+        "title": "summarize_signin_failuresArguments",
+        "type": "object"
+      },
+      "name": "summarize_signin_failures",
+      "output_schema": {
+        "additionalProperties": true,
+        "title": "summarize_signin_failuresDictOutput",
         "type": "object"
       }
     },

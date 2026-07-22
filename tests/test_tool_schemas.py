@@ -37,7 +37,8 @@ def test_alert_filters_publish_bounds_and_enums() -> None:
 
 
 def test_identity_filters_publish_bounds_and_enums() -> None:
-    properties = _tool_schemas()["get_signin_logs"]["properties"]
+    schemas = _tool_schemas()
+    properties = schemas["get_signin_logs"]["properties"]
 
     assert properties["days_back"]["minimum"] == 1
     assert properties["days_back"]["maximum"] == 30
@@ -45,6 +46,31 @@ def test_identity_filters_publish_bounds_and_enums() -> None:
     assert properties["top"]["maximum"] == 500
     assert _enum_values(properties["status"]) == {"success", "failure", "all"}
     assert _enum_values(properties["risk_level"]) == {"none", "low", "medium", "high", "all"}
+
+    role_properties = schemas["get_users_by_directory_role"]["properties"]
+    assert _enum_values(role_properties["assignment_state"]) == {"active", "eligible", "all"}
+    assert role_properties["top"]["maximum"] == 200
+
+    group_properties = schemas["list_identity_groups"]["properties"]
+    assert _enum_values(group_properties["group_type"]) == {
+        "all",
+        "security",
+        "microsoft365",
+        "role_assignable",
+    }
+    analysis_properties = schemas["analyze_identity_group"]["properties"]
+    assert _enum_values(analysis_properties["membership_scope"]) == {"direct", "transitive"}
+    assert analysis_properties["top"]["maximum"] == 500
+
+    activity_properties = schemas["get_signin_activity"]["properties"]
+    assert _enum_values(activity_properties["time_range"]) == {
+        "1h",
+        "24h",
+        "7d",
+        "30d",
+        "90d",
+    }
+    assert activity_properties["top"]["maximum"] == 500
 
 
 def test_advanced_hunt_days_are_bounded() -> None:
@@ -60,7 +86,7 @@ def test_all_tools_publish_read_only_annotations() -> None:
 
     tools = asyncio.run(load_tools())
 
-    assert len(tools) == 38
+    assert len(tools) == 59
     for tool in tools:
         assert tool.annotations is not None, tool.name
         assert tool.annotations.readOnlyHint is True, tool.name

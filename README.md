@@ -1,6 +1,6 @@
 # Defender Hunt MCP
 
-A Model Context Protocol (MCP) server for **Microsoft Defender Advanced Hunting** and **Microsoft Entra ID** identity investigation. It exposes 38 read-oriented atomic/workflow tools and eight resources over stateless Streamable HTTP with Microsoft Entra authentication.
+A Model Context Protocol (MCP) server for **Microsoft Defender Advanced Hunting** and **Microsoft Entra ID** identity investigation. It exposes 59 read-oriented atomic/workflow tools and eight resources over stateless Streamable HTTP with Microsoft Entra authentication.
 
 > [!IMPORTANT]
 > This project is currently intended for analyst-assisted investigation in a controlled environment. Review [Security](docs/security.md) and [known functional limitations](docs/security.md#known-functional-limitations) before production deployment or use as an unattended detection control.
@@ -12,12 +12,12 @@ A Model Context Protocol (MCP) server for **Microsoft Defender Advanced Hunting*
 | **KQL Hunting** | Execute Advanced Hunting KQL and perform a basic known-table reference check. |
 | **Alert Management** | List, filter, and inspect Microsoft Defender security alerts with severity/status filtering and statistical summaries. |
 | **Threat Intelligence** | Query Defender Threat Intelligence profiles, enrich Indicators of Compromise (IoCs), and hunt for IoCs in Defender telemetry. |
-| **Identity Investigation** | Query Entra ID sign-in logs, audit logs, risky users, risky sign-ins, Conditional Access policies, and build comprehensive user risk profiles. |
+| **Identity Investigation** | Consolidate identity context, authentication posture, sign-ins, Conditional Access results, privileges, PIM, risk, and Defender alerts. |
 | **Security Posture** | Generate environment summaries, device lookups, Secure Score control recommendations, and user logon investigations. |
 | **Agent Governance (beta)** | Inventory Entra Agent Identities and review bounded application-role assignments. |
 | **Advanced Threat Hunting** | Pre-built detection modules covering ransomware indicators, suspicious PowerShell, LOLBIN abuse, lateral movement, credential access/dumping, persistence mechanisms, suspicious child processes, remote access tools/RATs, defense evasion, threat intel feed matching, data exfiltration, and ASR rule events. |
 
-## Tools (38)
+## Tools (59)
 
 ### Core Hunting
 | Tool | Description |
@@ -51,6 +51,23 @@ A Model Context Protocol (MCP) server for **Microsoft Defender Advanced Hunting*
 ### Microsoft Entra ID
 | Tool | Description |
 |---|---|
+| `get_identity_context` | Consolidate profile, organization, groups, roles, app roles, licenses, manager, reports, and ownerships. |
+| `get_authentication_posture` | Assess registered authentication methods, MFA registration, FIDO2/passkeys, WHfB, and passwordless readiness. |
+| `get_signin_activity` | Return bounded sign-in evidence plus applications, devices, locations, IPs, and risk indicators. |
+| `analyze_signin_risk` | Produce an explainable score from Identity Protection, risky sign-ins, and failures. |
+| `get_applied_conditional_access` | Inspect actual Conditional Access policy results for one sign-in. |
+| `get_identity_alerts` | Match Defender XDR alert user evidence to an identity ID or UPN. |
+| `get_privileged_access` | List active/eligible directory roles and role-assignable group membership. |
+| `get_pim_eligibility` | Return active and eligible directory-role assignments with scope and expiration. |
+| `get_pim_activations` | Return bounded PIM self-activation request history and justification. |
+| `get_user_app_role_assignments` | List enterprise application (app role) assignments granted to a user. |
+| `list_privileged_role_assignments` | Tenant-wide snapshot of active directory-role assignments with principals. |
+| `get_authentication_methods_policy` | Report tenant authentication methods policy and flag weak enabled methods. |
+| `find_user_oauth_grants` | List a user's delegated OAuth2 grants and flag high-risk scopes. |
+| `summarize_signin_failures` | Aggregate failed sign-ins by error code, user, and IP to surface spray/lockout. |
+| `get_users_by_directory_role` | Resolve active or PIM-eligible directory-role principals, including users inherited through role-assignable groups. |
+| `list_identity_groups` | Inventory security, Microsoft 365, or role-assignable groups. |
+| `analyze_identity_group` | Inspect group properties, owners, and bounded direct or transitive membership. |
 | `get_signin_logs` | Retrieve Entra ID sign-in logs with UPN, app, status, and risk filters. |
 | `get_audit_logs` | Retrieve Entra ID audit/directory logs filtered by category, activity, or target. |
 | `get_risky_users` | List users flagged by Entra ID Identity Protection. |
@@ -77,6 +94,8 @@ A Model Context Protocol (MCP) server for **Microsoft Defender Advanced Hunting*
 ### Token-efficient workflows
 | Tool | Description |
 |---|---|
+| `investigate_identity` | Combine context, authentication, risk, alerts, and privileged access with bounded evidence. |
+| `recommend_next_investigation_steps` | Deterministically route structured findings to the next evidence-gathering tools. |
 | `investigate_user` | Combine sign-ins, risky sign-ins, and audit activity with bounded evidence. |
 | `investigate_alert` | Combine one alert with alert statistics and bounded context. |
 | `hunt_iocs_batch` | Deduplicate and enrich up to 20 typed IoCs with bounded concurrency. |
@@ -88,6 +107,8 @@ A Model Context Protocol (MCP) server for **Microsoft Defender Advanced Hunting*
 | `list_agent_identities` | List Entra Agent Identity service principals through a feature-flagged Graph beta adapter. |
 | `get_agent_identity_profile` | Retrieve one Agent Identity and bounded application-role analysis. |
 | `analyze_agent_permissions` | Produce explainable heuristic review of an agent's app-role assignments. |
+| `evaluate_agent_risk` | Score one beta Agent Identity using bounded assignment heuristics. |
+| `list_agents_with_excessive_permissions` | List beta Agent Identities meeting a configurable heuristic risk threshold. |
 
 ## Resources
 
@@ -112,7 +133,7 @@ The complete behavioral reference, inputs, caveats, and result semantics are doc
 | [Development](docs/development.md) | `uv` workflow, quality checks, project layout, MCP smoke test, and KQL development rules. |
 | [Deployment](docs/deployment.md) | Docker Compose, direct Docker, Azure Container Apps scripts, verification, and production hardening. |
 | [Security](docs/security.md) | Trust model, secrets, query/input risks, third-party feeds, and known limitations. |
-| [Tools and resources](docs/tools.md) | Current 31-tool and seven-resource reference derived from the live registry. |
+| [Tools and resources](docs/tools.md) | Current 59-tool and eight-resource reference derived from the live registry. |
 | [Contributing](CONTRIBUTING.md) | Development workflow, required checks, and pull request guidance. |
 | [Security policy](SECURITY.md) | Private vulnerability reporting and supported-version policy. |
 
@@ -131,7 +152,7 @@ The complete behavioral reference, inputs, caveats, and result semantics are doc
                                 ┌─────────▼────────────────┐
                                 │  server.py               │
                                 │  FastMCP server          │
-                                │ 38 tools · 8 resources   │
+                                │ 59 tools · 8 resources   │
                                 └─────────┬────────────────┘
                                           │
                                 ┌─────────▼────────────────┐
@@ -167,6 +188,19 @@ See [Configuration](docs/configuration.md) for `MCP_PORT`, authentication bounda
 - `AuditLog.Read.All` — Sign-in and audit logs
 - `IdentityRiskyUser.Read.All` — Risky users
 - `Policy.Read.All` — Conditional Access policies
+- `RoleManagement.Read.Directory` — Active directory-role definitions and assignments
+- `RoleEligibilitySchedule.Read.Directory` — PIM-eligible role assignments when `assignment_state` is `eligible` or `all`
+- `GroupMember.Read.All` — Group owners and direct/transitive membership
+- `Group.Read.All` — Full group inventory and properties
+- `Member.Read.Hidden` — Hidden group membership, only when that tenant data must be analyzed
+- `User.Read.All` — Identity profile and organizational relationships
+- `LicenseAssignment.Read.All` — License details when not covered by an approved broader directory permission
+- `UserAuthenticationMethod.Read.All` — Authentication methods for other users
+- `RoleAssignmentSchedule.Read.Directory` — PIM activation request history
+- `SecurityAlert.Read.All` — Defender XDR identity-alert correlation
+- `Application.Read.All` — App-role assignment resource resolution and OAuth grant review
+- `DelegatedPermissionGrant.Read.All` — Delegated OAuth2 permission grants per user
+- `Policy.Read.All` — Authentication methods policy (also covers Conditional Access)
 
 Grant application permissions with tenant-wide admin consent and apply least privilege. `SecurityEvents.Read.All` also covers the Secure Score endpoint currently used by `get_security_recommendations`.
 
