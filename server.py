@@ -94,6 +94,9 @@ mcp = FastMCP(
         "Conditional Access), security posture dashboards, and advanced threat detection "
         "modules covering ransomware, LOLBIN abuse, lateral movement, credential dumping, "
         "persistence, defense evasion, RATs, data exfiltration, and ASR events. "
+        "To list who holds an administrative role such as Global Administrator, use "
+        "get_users_by_directory_role; for a tenant-wide privileged snapshot use "
+        "list_privileged_role_assignments. "
         "All queries run against the Microsoft Graph Security API."
     ),
     host="0.0.0.0",
@@ -1297,7 +1300,7 @@ async def get_users_by_directory_role(
     ] = True,
     top: ResultLimit200 = 100,
 ) -> str:
-    """List principals assigned or eligible for a Microsoft Entra directory role."""
+    """List who holds an admin role: users, groups, and service principals assigned or PIM-eligible for a Microsoft Entra directory role such as Global Administrator. Use this to answer "who are the global admins / role members"."""
     top = min(top, 200)
     try:
         client = get_graph_client()
@@ -2267,7 +2270,7 @@ async def list_privileged_role_assignments(
     ] = True,
     top: ResultLimit500 = 200,
 ) -> dict[str, Any]:
-    """Snapshot active directory-role assignments across the tenant with principals."""
+    """List all privileged admins at once: a tenant-wide snapshot of active directory-role assignments (Global Administrator and other sensitive roles) with the assigned principals."""
     from msgraph.generated.role_management.directory.role_assignments.role_assignments_request_builder import (
         RoleAssignmentsRequestBuilder,
     )

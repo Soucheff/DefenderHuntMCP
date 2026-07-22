@@ -1557,7 +1557,7 @@
         "openWorldHint": true,
         "readOnlyHint": true
       },
-      "description": "List principals assigned or eligible for a Microsoft Entra directory role.",
+      "description": "List who holds an admin role: users, groups, and service principals assigned or PIM-eligible for a Microsoft Entra directory role such as Global Administrator. Use this to answer \"who are the global admins / role members\".",
       "input_schema": {
         "properties": {
           "assignment_state": {
@@ -2572,7 +2572,7 @@
         "openWorldHint": true,
         "readOnlyHint": true
       },
-      "description": "Snapshot active directory-role assignments across the tenant with principals.",
+      "description": "List all privileged admins at once: a tenant-wide snapshot of active directory-role assignments (Global Administrator and other sensitive roles) with the assigned principals.",
       "input_schema": {
         "properties": {
           "only_privileged": {
