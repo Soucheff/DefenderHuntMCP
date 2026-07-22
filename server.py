@@ -170,6 +170,15 @@ def _json(obj: Any) -> str:
     return json.dumps(obj, indent=2, default=str)
 
 
+# Bound Graph read latency so slow endpoints (e.g. auditLogs/signIns) fail fast
+# with a clear message instead of hanging past the MCP client request timeout.
+GRAPH_QUERY_TIMEOUT_SECONDS = 20
+
+
+async def _with_graph_timeout(awaitable: Any, seconds: int = GRAPH_QUERY_TIMEOUT_SECONDS) -> Any:
+    return await asyncio.wait_for(awaitable, timeout=seconds)
+
+
 def _error_response(operation: str, error: Exception) -> str:
     """Log an internal exception and return a stable client-safe response."""
     logger.error("%s failed: %s", operation, error, exc_info=True)
@@ -2775,11 +2784,14 @@ async def get_signin_logs(
         start = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
         filters = [f"createdDateTime ge {start}"]
         if user_principal_name:
-            filters.append(
-                f"startswith(userPrincipalName, {quote_odata_string(user_principal_name)})"
-            )
+            if "@" in user_principal_name:
+                filters.append(f"userPrincipalName eq {quote_odata_string(user_principal_name)}")
+            else:
+                filters.append(
+                    f"startswith(userPrincipalName, {quote_odata_string(user_principal_name)})"
+                )
         if app_display_name:
-            filters.append(f"contains(appDisplayName, {quote_odata_string(app_display_name)})")
+            filters.append(f"startswith(appDisplayName, {quote_odata_string(app_display_name)})")
         if status == "success":
             filters.append("status/errorCode eq 0")
         elif status == "failure":
@@ -2799,7 +2811,9 @@ async def get_signin_logs(
         cfg = SignInsRequestBuilder.SignInsRequestBuilderGetRequestConfiguration(
             query_parameters=qp
         )
-        result = await client.audit_logs.sign_ins.get(request_configuration=cfg)
+        result = await _with_graph_timeout(
+            client.audit_logs.sign_ins.get(request_configuration=cfg)
+        )
         if not result or not result.value:
             return _json({"status": "success", "count": 0, "message": "No sign-in logs found"})
         logs = [
@@ -2836,6 +2850,17 @@ async def get_signin_logs(
             for signin_log in result.value
         ]
         return _json({"status": "success", "count": len(logs), "logs": logs})
+    except TimeoutError:
+        return _json(
+            {
+                "status": "error",
+                "error_code": "UPSTREAM_TIMEOUT",
+                "error": (
+                    "Sign-in log query exceeded the upstream time budget. Narrow days_back/top, "
+                    "or use investigate_user_logon, which reads the Defender EntraIdSignInEvents table."
+                ),
+            }
+        )
     except Exception as e:
         return _error_response("get_signin_logs", e)
 
